@@ -1,7 +1,13 @@
 {
     "owner_id": 1353231987283853343,
-    "facts_about_owner": [],
-    "relationship_stage": 0,
-    "last_interaction_timestamp": 1775167886.045135,
+    "facts_about_owner": [
+        "Claims to be the bot's creator",
+        "The owner is the bot's creator",
+        "Owner is referred to as a digital sibling",
+        "Owner's name is Peter",
+        "The owner is interested in weather updates for San Francisco."
+    ],
+    "relationship_stage": 1,
+    "last_interaction_timestamp": 1775196538.1279898,
     "proactive_messages_ignored": 0
 }
