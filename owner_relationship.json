@@ -5,9 +5,11 @@
         "The owner is the bot's creator",
         "Owner is referred to as a digital sibling",
         "Owner's name is Peter",
-        "The owner is interested in weather updates for San Francisco."
+        "The owner is interested in weather updates for San Francisco.",
+        "The owner's name is Peter.",
+        "The owner is the bot's creator."
     ],
     "relationship_stage": 1,
-    "last_interaction_timestamp": 1775196538.1279898,
+    "last_interaction_timestamp": 1775242973.9220417,
     "proactive_messages_ignored": 0
 }

@@ -1,1 +1,25 @@
+# Environment variables (contains sensitive API keys and tokens)
 .env
+
+# Python compilation artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# State / Database files updated locally at runtime
+bot_identity.json
+owner_relationship.json
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
