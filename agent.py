@@ -3,9 +3,9 @@ import json
 import datetime
 from memory_manager import MemoryManager
 
-from local_model.logic import _generate_with_local, _extract_with_local
-from claude_model.logic import _generate_with_claude, _extract_with_claude
-from openai_model.logic import _generate_with_openai, _extract_with_openai
+from models.local_model_logic import _generate_with_local, _extract_with_local
+from models.claude_model_logic import _generate_with_claude, _extract_with_claude
+from models.openai_model_logic import _generate_with_openai, _extract_with_openai
 
 # ===============================================
 # SYSTEM PROMPT
@@ -154,16 +154,24 @@ async def extract_and_update_memory(memory: MemoryManager, user_message: str, bo
     Extraction priority: Local Llama -> Claude -> OpenAI
     """
     owner_info = memory.get_owner_relationship()
+    bot_info = memory.get_bot_identity()
+    
     existing_facts = "\n".join([f"- {f}" for f in owner_info.get("facts_about_owner", [])])
+    existing_traits = ", ".join(bot_info.get("personality_traits", []))
     
     prompt = (
         f"Analyze this recent exchange between the owner and the bot.\n"
         f"Owner: {user_message}\n"
         f"Bot: {bot_response}\n\n"
-        f"Here are the facts you ALREADY know about the owner:\n"
+        f"Facts ALREADY known about the owner:\n"
         f"{existing_facts if existing_facts else 'None yet.'}\n\n"
-        f"Extract any NEW facts about the owner, any NEW name chosen for the bot, or any NEW personality traits. "
-        f"CRITICAL: Do NOT extract facts that are already in the existing facts list or mean the exact same thing."
+        f"Traits ALREADY known about the bot:\n"
+        f"{existing_traits if existing_traits else 'None yet.'}\n\n"
+        f"Task: Extract any NEW facts about the owner, any NEW name chosen for the bot, or any NEW personality traits.\n"
+        f"CRITICAL: \n"
+        f"1. Do NOT extract facts or traits that are already listed above or mean the same thing.\n"
+        f"2. Keep personality traits SIMPLE (one or two words like 'Playful', 'Humorous'). Avoid compound sentences.\n"
+        f"3. If a trait is just a better version of an existing one, extract it anyway and we will handle the update."
     )
 
     try:

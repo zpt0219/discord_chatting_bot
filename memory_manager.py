@@ -61,9 +61,9 @@ class MemoryManager:
     def add_personality_traits(self, traits):
         """
         Appends new personality traits using LRU cache logic (max 100).
-        - If a trait already exists: move it to the END (most recently used).
-        - If it's new: append to the END.
-        - If the list exceeds 100: evict from the FRONT (least recently used).
+        - Splits compound traits (e.g., "playful and humorous") into simple ones.
+        - Normalizes each trait (strips whitespace, lowercase comparison, remove trailing periods).
+        - Deduplicates using case-insensitive exact matching.
         """
         # Safety: if the LLM returned a single string instead of a list, wrap it
         if isinstance(traits, str):
@@ -71,11 +71,26 @@ class MemoryManager:
         
         data = self.get_bot_identity()
         changed = False
-        for trait in traits:
-            # Skip single characters or very short junk
-            if not isinstance(trait, str) or len(trait) < 3:
+        
+        # 1. Expand compound traits and normalize
+        expanded_traits = []
+        for raw_trait in traits:
+            if not isinstance(raw_trait, str):
                 continue
             
+            # Split by common connectors: " and ", ",", "/", "&"
+            # We use a simple regex-like approach by replacing connectors with a common delimiter
+            normalized = raw_trait.replace(" and ", "|").replace(",", "|").replace("/", "|").replace("&", "|")
+            parts = [p.strip() for p in normalized.split("|")]
+            
+            for p in parts:
+                # Clean up: remove trailing punctuation, lowercase for comparison
+                clean = p.strip().strip(".,!?;:\"'").lower()
+                if len(clean) >= 3 and clean not in ["none", "identified", "yet"]:
+                    # We store the original case but use lowercase for comparison
+                    expanded_traits.append(p.strip().strip(".,!?;:\"'"))
+        
+        for trait in expanded_traits:
             # Check for existing match (case-insensitive)
             existing_index = None
             for i, existing in enumerate(data["personality_traits"]):

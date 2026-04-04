@@ -100,30 +100,33 @@ async def _generate_with_openai(formatted_system: str, chat_history: list, image
 
     message_obj = response.choices[0].message
 
-    # STEP 2: Did the LLM decide to call a tool?
+    # STEP 2: Did the LLM decide to call tools?
     if message_obj.tool_calls:
-        tool_call = message_obj.tool_calls[0]
-
-        args = {}
-        if tool_call.function.arguments:
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except:
-                pass
-
-        result_text = execute_skill(tool_call.function.name, args)
-
+        # Append the assistant's message with ALL tool calls
         openai_messages.append({
             "role": "assistant",
             "content": message_obj.content,
-            "tool_calls": [tool_call.model_dump()]
+            "tool_calls": [tc.model_dump() for tc in message_obj.tool_calls]
         })
-        openai_messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "name": tool_call.function.name,
-            "content": result_text
-        })
+        
+        # Execute each tool independently
+        for tool_call in message_obj.tool_calls:
+            args = {}
+            if tool_call.function.arguments:
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                except:
+                    pass
+
+            result_text = execute_skill(tool_call.function.name, args)
+
+            # Append the result for this specific tool call
+            openai_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "content": result_text
+            })
 
         # STEP 3: Final synthesis with tool output
         response_two = await client.chat.completions.create(

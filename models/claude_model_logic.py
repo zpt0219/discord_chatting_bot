@@ -181,19 +181,22 @@ async def _generate_with_claude(formatted_system: str, chat_history: list, image
         messages=clean_history
     )
     
-    # STEP 2: Intercept tool use
+    # STEP 2: Intercept tool use (handle multiple tools if needed)
     if claude_res.stop_reason == "tool_use":
-        tool_call = next(block for block in claude_res.content if block.type == "tool_use")
-        result_text = execute_skill(tool_call.name, tool_call.input)
+        tool_results = []
+        for block in claude_res.content:
+            if getattr(block, "type", None) == "tool_use":
+                result_text = execute_skill(block.name, block.input)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result_text
+                })
         
         # Layout Anthropic's strict multi-turn tool format memory block
-        # IMPORTANT: Use clean_history (sanitized) not raw chat_history to avoid tool_use pairing errors
         temp_history = list(clean_history)
         temp_history.append({"role": "assistant", "content": claude_res.content})
-        temp_history.append({
-            "role": "user", 
-            "content": [{"type": "tool_result", "tool_use_id": tool_call.id, "content": result_text}]
-        })
+        temp_history.append({"role": "user", "content": tool_results})
         
         # STEP 3: Final Synthesis
         claude_res_two = await c.messages.create(

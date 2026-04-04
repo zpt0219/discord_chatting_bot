@@ -52,33 +52,33 @@ async def _generate_with_local(formatted_system: str, chat_history: list) -> str
     
     # STEP 2: Did the LLM decide to pause and call a tool?
     if message_obj.tool_calls:
-        tool_call = message_obj.tool_calls[0]
-        
-        import json
-        args = {}
-        if tool_call.function.arguments:
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except:
-                pass
-                
-        # Execute the matched python skill payload locally
-        result_text = execute_skill(tool_call.function.name, args)
-        
-        # Inject the tool request reasoning back into the conversational loop
+        # Append the assistant's message with ALL tool calls
         openai_messages.append({
             "role": "assistant",
             "content": message_obj.content,
-            "tool_calls": [tool_call.model_dump()]
+            "tool_calls": [tc.model_dump() for tc in message_obj.tool_calls]
         })
         
-        # Inject the real-world output of the python script back to the LLM
-        openai_messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "name": tool_call.function.name,
-            "content": result_text
-        })
+        # Execute each tool independently
+        for tool_call in message_obj.tool_calls:
+            import json
+            args = {}
+            if tool_call.function.arguments:
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                except:
+                    pass
+                    
+            # Execute the matched python skill payload locally
+            result_text = execute_skill(tool_call.function.name, args)
+            
+            # Inject the real-world output of the python script back to the LLM
+            openai_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "content": result_text
+            })
         
         # STEP 3: Ask the LLM to generate the final chat response now that it has the tool's data
         response_two = await local_client.chat.completions.create(
