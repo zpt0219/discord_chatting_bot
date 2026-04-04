@@ -36,7 +36,8 @@ class MemoryManager:
                 json.dump({
                     "owner_id": None,     # Discord User ID of the owner
                     "facts_about_owner": [], # Array of strings summarizing the owner
-                    "relationship_stage": 0,  # 0: just met, 1: acquaintance, 2: friend
+                    "relationship_stage": "stranger",  # stranger -> acquaintance -> friend
+                    "preferred_language": None,  # e.g. "Chinese", "English", etc.
                     "last_interaction_timestamp": 0, # When they last talked
                     "proactive_messages_ignored": 0  # Counter for backoff logic
                 }, f, indent=4)
@@ -57,16 +58,48 @@ class MemoryManager:
         with open(BOT_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
             
-    def add_personality_traits(self, traits: List[str]):
-        """Appends new personality traits to the list, verifying they aren't duplicates."""
+    def add_personality_traits(self, traits):
+        """
+        Appends new personality traits using LRU cache logic (max 100).
+        - If a trait already exists: move it to the END (most recently used).
+        - If it's new: append to the END.
+        - If the list exceeds 100: evict from the FRONT (least recently used).
+        """
+        # Safety: if the LLM returned a single string instead of a list, wrap it
+        if isinstance(traits, str):
+            traits = [traits]
+        
         data = self.get_bot_identity()
-        added = False
+        changed = False
         for trait in traits:
-            if trait not in data["personality_traits"]:
+            # Skip single characters or very short junk
+            if not isinstance(trait, str) or len(trait) < 3:
+                continue
+            
+            # Check for existing match (case-insensitive)
+            existing_index = None
+            for i, existing in enumerate(data["personality_traits"]):
+                if existing.lower() == trait.lower():
+                    existing_index = i
+                    break
+            
+            if existing_index is not None:
+                # LRU: Move existing trait to the end (mark as recently used)
+                data["personality_traits"].append(data["personality_traits"].pop(existing_index))
+                changed = True
+            else:
+                # New trait: append to end
                 data["personality_traits"].append(trait)
-                added = True
-        # Only rewrite the file if we actually added something new
-        if added:
+                changed = True
+        
+        # LRU eviction: if over 100 traits, trim from the front (least recently used)
+        MAX_TRAITS = 100
+        if len(data["personality_traits"]) > MAX_TRAITS:
+            evicted = data["personality_traits"][:-MAX_TRAITS]
+            data["personality_traits"] = data["personality_traits"][-MAX_TRAITS:]
+            print(f"MEMORY: Evicted {len(evicted)} least-used personality traits (LRU cap: {MAX_TRAITS})")
+        
+        if changed:
             with open(BOT_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
@@ -94,11 +127,18 @@ class MemoryManager:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
-    def add_facts_about_owner(self, facts: List[str]):
+    def add_facts_about_owner(self, facts):
         """Appends newly learned facts about the owner, dodging duplicates."""
+        # Safety: if the LLM returned a single string instead of a list, wrap it
+        if isinstance(facts, str):
+            facts = [facts]
+        
         data = self.get_owner_relationship()
         added = False
         for fact in facts:
+            # Skip single characters or very short junk
+            if not isinstance(fact, str) or len(fact) < 3:
+                continue
             if fact not in data["facts_about_owner"]:
                 data["facts_about_owner"].append(fact)
                 added = True
@@ -107,15 +147,27 @@ class MemoryManager:
         # As the bot learns more facts, it naturally evolves its relationship stage.
         # This makes the bot reach out less frequently (or differently) over time
         # instead of relying on a rigid timeline.
-        if len(data["facts_about_owner"]) >= 5 and data["relationship_stage"] == 0:
-            data["relationship_stage"] = 1 # Became acquaintances!
-        elif len(data["facts_about_owner"]) >= 15 and data["relationship_stage"] == 1:
-            data["relationship_stage"] = 2 # Became friends!
+        if len(data["facts_about_owner"]) >= 5 and data["relationship_stage"] == "stranger":
+            data["relationship_stage"] = "acquaintance" # Became acquaintances!
+        elif len(data["facts_about_owner"]) >= 15 and data["relationship_stage"] == "acquaintance":
+            data["relationship_stage"] = "friend" # Became friends!
             
         if added:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
                 
+    # ==========================================
+    # LANGUAGE PREFERENCE
+    # ==========================================
+    
+    def update_preferred_language(self, language: str):
+        """Updates the owner's preferred language in the relationship file."""
+        data = self.get_owner_relationship()
+        data["preferred_language"] = language
+        with open(OWNER_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        print(f"MEMORY: Updated preferred language to '{language}'")
+
     # ==========================================
     # PROACTIVE MESSAGING TRACKERS
     # ==========================================

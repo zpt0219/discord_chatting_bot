@@ -1,15 +1,16 @@
 {
     "owner_id": 1353231987283853343,
     "facts_about_owner": [
-        "Claims to be the bot's creator",
-        "The owner is the bot's creator",
-        "Owner is referred to as a digital sibling",
         "Owner's name is Peter",
         "The owner is interested in weather updates for San Francisco.",
-        "The owner's name is Peter.",
-        "The owner is the bot's creator."
+        "The owner is the bot's creator.",
+        "Is interested in AI video generation tools like Pika.ai",
+        "Is interested in Chinese geography",
+        "The owner (Peter) has an avatar that he shares with the bot for feedback.",
+        "Is interested in the game 'The Adventure of Amethyst Knight'"
     ],
-    "relationship_stage": 1,
-    "last_interaction_timestamp": 1775242973.9220417,
+    "relationship_stage": "acquaintance",
+    "preferred_language": "Chinese",
+    "last_interaction_timestamp": 1775264080.7653518,
     "proactive_messages_ignored": 0
 }

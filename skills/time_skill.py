@@ -45,4 +45,5 @@ def execute(arguments: dict = None) -> str:
     It returns a natural string describing the date and time, which the LLM will 
     read and then incorporate into its next conversational reply to the user.
     """
+    print(f"DEBUG: Time tool called with arguments: {arguments}")
     return datetime.datetime.now().strftime("The current date and time is: %A, %B %d, %Y %I:%M %p")

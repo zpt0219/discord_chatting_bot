@@ -48,6 +48,7 @@ def execute(arguments: dict = None) -> str:
     Pings wttr.in for formatted short-text weather data.
     Defaults to San Francisco if the LLM hallucinated the arguments variable.
     """
+    print(f"DEBUG: Weather tool called with arguments: {arguments}")
     location = "San Francisco"
     if arguments and "location" in arguments:
         location = arguments["location"]

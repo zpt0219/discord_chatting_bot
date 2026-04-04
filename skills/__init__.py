@@ -6,6 +6,10 @@ from .weather_skill import get_openai_schema as weather_openai
 from .weather_skill import get_anthropic_schema as weather_anthropic
 from .weather_skill import execute as weather_execute
 
+from .search_skill import get_openai_schema as search_openai
+from .search_skill import get_anthropic_schema as search_anthropic
+from .search_skill import execute as search_execute
+
 # =======================================================
 # SKILL ROUTER ARCHITECTURE
 # =======================================================
@@ -20,7 +24,8 @@ def get_all_openai_tools():
     """
     return [
         time_openai(),
-        weather_openai()
+        weather_openai(),
+        search_openai()
     ]
 
 def get_all_anthropic_tools():
@@ -30,7 +35,8 @@ def get_all_anthropic_tools():
     """
     return [
         time_anthropic(),
-        weather_anthropic()
+        weather_anthropic(),
+        search_anthropic()
     ]
 
 def execute_skill(name: str, arguments: dict = None) -> str:
@@ -44,5 +50,7 @@ def execute_skill(name: str, arguments: dict = None) -> str:
         return time_execute(arguments)
     elif name == "get_weather":
         return weather_execute(arguments)
+    elif name == "search_web":
+        return search_execute(arguments)
         
     return f"Skill execution failed: Unknown tool '{name}'."

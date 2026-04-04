@@ -15,12 +15,161 @@ def get_anthropic_client() -> AsyncAnthropic:
         anthropic_client = AsyncAnthropic(api_key=api_key)
     return anthropic_client
 
-async def _generate_with_claude(formatted_system: str, chat_history: list) -> str:
+def _extract_text_from_content(content) -> str:
+    """
+    Extracts plain text from any content format:
+    - Plain string -> returned as-is
+    - List of dicts (e.g. [{"type": "text", "text": "..."}]) -> extracts text fields
+    - List of Anthropic SDK objects (e.g. TextBlock, ToolUseBlock) -> extracts .text attributes
+    - Anything else -> str() conversion
+    """
+    if isinstance(content, str):
+        return content
+    
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            # Handle plain dicts like {"type": "text", "text": "..."}
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            # Handle plain strings in a list
+            elif isinstance(block, str):
+                text_parts.append(block)
+            # Handle Anthropic SDK objects (TextBlock, ToolUseBlock, etc.)
+            elif hasattr(block, "type"):
+                if getattr(block, "type", None) == "text" and hasattr(block, "text"):
+                    text_parts.append(block.text)
+                # Skip tool_use, tool_result, and any other block types
+        return " ".join(text_parts) if text_parts else ""
+    
+    # Fallback: convert to string
+    return str(content) if content else ""
+
+
+def _sanitize_history_for_claude(chat_history: list) -> list:
+    """
+    Claude's API is extremely strict about message formatting:
+    1. Roles MUST strictly alternate: user -> assistant -> user -> assistant
+    2. Every tool_use block MUST have a tool_result immediately after
+    3. Content must be plain strings, not complex objects
+    
+    This function sanitizes raw chat history (especially from Discord sync)
+    to satisfy these requirements by forcing ALL content to plain strings.
+    """
+    sanitized = []
+    for msg in chat_history:
+        role = msg.get("role", "user") if isinstance(msg, dict) else "user"
+        content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+        
+        # Force content to be a plain string no matter what its original type is
+        content = _extract_text_from_content(content)
+        
+        if not content.strip():
+            continue
+            
+        # Merge consecutive messages from the same role
+        if sanitized and sanitized[-1]["role"] == role:
+            sanitized[-1]["content"] += "\n" + content
+        else:
+            sanitized.append({"role": role, "content": content})
+    
+    # Claude requires the first message to be from 'user'
+    while sanitized and sanitized[0]["role"] != "user":
+        sanitized.pop(0)
+    
+    # Claude requires the last message to be from 'user'
+    while sanitized and sanitized[-1]["role"] != "user":
+        sanitized.pop()
+    
+    return sanitized
+
+
+def _purge_orphaned_tool_blocks(messages: list) -> list:
+    """
+    Nuclear safety net: Scans the messages array for any content that contains
+    tool_use blocks without paired tool_result blocks. Strips them entirely.
+    This catches edge cases that the sanitizer might miss (e.g., Anthropic SDK objects).
+    """
+    def _has_tool_use(content):
+        """Check if content contains tool_use blocks in any format."""
+        if isinstance(content, str):
+            return False
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    return True
+                if hasattr(block, "type") and getattr(block, "type", None) == "tool_use":
+                    return True
+        return False
+    
+    def _has_tool_result(content):
+        """Check if content contains tool_result blocks."""
+        if isinstance(content, str):
+            return False
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    return True
+        return False
+    
+    cleaned = []
+    for i, msg in enumerate(messages):
+        content = msg.get("content", "") if isinstance(msg, dict) else ""
+        
+        if _has_tool_use(content):
+            # Check if the NEXT message has a matching tool_result
+            next_msg = messages[i + 1] if i + 1 < len(messages) else None
+            next_content = next_msg.get("content", "") if isinstance(next_msg, dict) else ""
+            
+            if _has_tool_result(next_content):
+                # Proper pairing exists, keep both
+                cleaned.append(msg)
+            else:
+                # Orphaned tool_use! Convert to plain text
+                text = _extract_text_from_content(content)
+                if text.strip():
+                    cleaned.append({"role": msg.get("role", "assistant"), "content": text})
+                print(f"WARNING: Purged orphaned tool_use block from message {i}")
+        else:
+            cleaned.append(msg)
+    
+    return cleaned
+
+
+async def _generate_with_claude(formatted_system: str, chat_history: list, image_data: list = None) -> str:
     """
     Helper to generate a response using Anthropic Claude.
     Used for complex queries or as a robust fallback system.
+    Supports vision: pass image_data to analyze images.
     """
     c = get_anthropic_client()
+    
+    # Sanitize raw chat history to meet Claude's strict formatting rules
+    clean_history = _sanitize_history_for_claude(chat_history)
+    
+    # If image data is provided, inject it into the last user message as multimodal content blocks
+    if image_data and clean_history:
+        last_msg = clean_history[-1]
+        if last_msg["role"] == "user":
+            # Build the content as a list of blocks: image(s) first, then text
+            content_blocks = []
+            for img in image_data:
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img["media_type"],
+                        "data": img["base64"]
+                    }
+                })
+            # Append the user's text after the images
+            text = last_msg["content"] if last_msg["content"] != "[sent an image]" else "What is in this image?"
+            content_blocks.append({"type": "text", "text": text})
+            clean_history[-1] = {"role": "user", "content": content_blocks}
+    
+    # Final safety check: validate that no orphaned tool_use blocks exist in the messages
+    clean_history = _purge_orphaned_tool_blocks(clean_history)
     
     # STEP 1: Initial call passing tools
     claude_res = await c.messages.create(
@@ -29,16 +178,17 @@ async def _generate_with_claude(formatted_system: str, chat_history: list) -> st
         temperature=0.7,
         system=formatted_system,
         tools=conversational_tools_anthropic,
-        messages=chat_history
+        messages=clean_history
     )
     
     # STEP 2: Intercept tool use
     if claude_res.stop_reason == "tool_use":
         tool_call = next(block for block in claude_res.content if block.type == "tool_use")
-        result_text = execute_skill(tool_call.name)
+        result_text = execute_skill(tool_call.name, tool_call.input)
         
         # Layout Anthropic's strict multi-turn tool format memory block
-        temp_history = list(chat_history)
+        # IMPORTANT: Use clean_history (sanitized) not raw chat_history to avoid tool_use pairing errors
+        temp_history = list(clean_history)
         temp_history.append({"role": "assistant", "content": claude_res.content})
         temp_history.append({
             "role": "user", 
@@ -82,6 +232,10 @@ async def _extract_with_claude(memory: MemoryManager, prompt: str):
                 "new_bot_traits": {
                     "type": "array",
                     "items": {"type": "string"}
+                },
+                "preferred_language": {
+                    "type": "string",
+                    "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages."
                 }
             }
         }
@@ -111,3 +265,6 @@ async def _extract_with_claude(memory: MemoryManager, prompt: str):
                 
             if "new_bot_traits" in args and args["new_bot_traits"]:
                 memory.add_personality_traits(args["new_bot_traits"])
+            
+            if "preferred_language" in args and args["preferred_language"]:
+                memory.update_preferred_language(args["preferred_language"])

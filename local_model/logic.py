@@ -54,8 +54,16 @@ async def _generate_with_local(formatted_system: str, chat_history: list) -> str
     if message_obj.tool_calls:
         tool_call = message_obj.tool_calls[0]
         
+        import json
+        args = {}
+        if tool_call.function.arguments:
+            try:
+                args = json.loads(tool_call.function.arguments)
+            except:
+                pass
+                
         # Execute the matched python skill payload locally
-        result_text = execute_skill(tool_call.function.name)
+        result_text = execute_skill(tool_call.function.name, args)
         
         # Inject the tool request reasoning back into the conversational loop
         openai_messages.append({
@@ -120,6 +128,10 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Any new personality traits the bot exhibited or adopted. Omit if none."
+                    },
+                    "preferred_language": {
+                        "type": "string",
+                        "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages (e.g. 'speak English', 'use Chinese')."
                     }
                 }
             }
@@ -155,3 +167,6 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                     
                 if "new_bot_traits" in args and args["new_bot_traits"]:
                     memory.add_personality_traits(args["new_bot_traits"])
+                
+                if "preferred_language" in args and args["preferred_language"]:
+                    memory.update_preferred_language(args["preferred_language"])
