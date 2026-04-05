@@ -139,9 +139,10 @@ def _purge_orphaned_tool_blocks(messages: list) -> list:
 
 async def _generate_with_claude(formatted_system: str, chat_history: list, image_data: list = None) -> str:
     """
-    Helper to generate a response using Anthropic Claude.
-    Used for complex queries or as a robust fallback system.
-    Supports vision: pass image_data to analyze images.
+    Tier 2 / Vision Primary: Generates a response using Anthropic Claude.
+    - PRIMARY: Handles all high-complexity reasoning and multi-step logic.
+    - PRIMARY: Acts as the lead vision provider for image analysis.
+    - FALLBACK: Replaces Tier 1 (Llama) if the local server is down or the query is too complex.
     """
     c = get_anthropic_client()
     

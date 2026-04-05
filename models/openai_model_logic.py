@@ -36,9 +36,10 @@ def get_openai_cloud_client() -> 'AsyncOpenAI':
 
 async def _generate_with_openai(formatted_system: str, chat_history: list, image_data: list = None, audio_data: list = None) -> str:
     """
-    Generates a response using OpenAI's cloud API (e.g., GPT-4o).
-    Used as the last-resort fallback when both local Llama and Claude fail.
-    Supports vision (image_data) and native audio input (audio_data).
+    Tier 3 / Audio Specialist: Generates a response using OpenAI's GPT-4o.
+    - PRIMARY: Handles all native voice/audio input processing.
+    - FALLBACK: Acts as the last-resort text provider if Local Llama and Claude both fail.
+    - FALLBACK: Acts as the secondary vision provider if Claude fails.
     """
     client = get_openai_cloud_client()
 

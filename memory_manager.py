@@ -10,8 +10,12 @@ OWNER_FILE = "owner_relationship.json"
 
 class MemoryManager:
     """
-    Handles persistent state for the Discord bot using local JSON files.
-    This acts as the 'database', preventing the bot from losing its memory when restarted.
+    The 'Persistent Brain' of the Agent.
+    
+    Manages long-term state using localized JSON files. It implements a 
+    Categorized Knowledge Store (Identity, Interests, Preferences, Routine)
+    to ensure the bot maintains a sophisticated and structured understanding 
+    of its owner across restarts.
     """
     
     def __init__(self):
@@ -150,9 +154,30 @@ class MemoryManager:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
+    def record_owner_reply(self, owner_reply: str, bot_response: str, summarized_memory: str = None):
+        """
+        Commits a conversation turn to persistent storage.
+        
+        1. Updates the last interaction timestamp (Clock Reset).
+        2. Appends new abstracted memories (if provided by the background model).
+        3. Enforces a 10,000 character limit on memories to optimize context windows.
+        """
+        data = self.get_owner_relationship()
+        if "facts" not in data:
+            data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
+            
+        data["last_interaction_timestamp"] = time.time()
+        data["proactive_messages_ignored"] = 0
+        
+        if summarized_memory:
+            self.add_summarized_memory(summarized_memory)
+        else:
+            with open(OWNER_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+
     def add_categorized_facts(self, categorized_facts: List[Dict[str, str]]):
         """
-        Adds or merges facts into specific categories.
+        Adds or merges facts into specific categories (Identity, Interests, Preferences, Routine, Other).
         categorized_facts: list of {"category": str, "text": str}
         """
         data = self.get_owner_relationship()

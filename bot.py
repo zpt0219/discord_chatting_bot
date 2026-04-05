@@ -14,10 +14,11 @@ from prompts import PROACTIVE_PROMPT
 load_dotenv()
 
 # =======================================================
-# SINGLETON INSTANCE CHECK (Anti-Multi-Reply)
+# SINGLETON INSTANCE LOCK (Anti-Multi-Reply)
 # =======================================================
-# This ensures that only one copy of the bot is running at a time.
-# If you try to start a second one, it will immediately exit.
+# This ensures that only one instance of the bot is running globally.
+# It protects against race conditions where multiple processes might try
+# to write to the same persistent JSON memory simultaneously.
 LOCK_FILE = ".bot.lock"
 
 def acquire_lock():
@@ -52,12 +53,12 @@ class AgentBot(discord.Client):
         # Initialize our local JSON memory manager
         self.memory = MemoryManager()
         
-        # Maintain a short recent history (last 10 turns) per user session.
-        # Since this bot focuses on a single owner, we use one simple list.
-        # This keeps the context window small while relying on JSON data for long-term memory.
+        # Short-term chat history (sliding window) to maintain immediate context.
+        # This is hydrated from Discord history if the bot restarts, ensuring context continuity.
         self.chat_history = []
         
-        # Lock to prevent concurrent message processing (prevents duplicate replies)
+        # PROCESSING LOCK: Critical to ensure one message is fully handled (Read -> Think -> Write)
+        # before the next one starts. This maintains strictly sequential memory integrity.
         self._processing_lock = asyncio.Lock()
         
     async def setup_hook(self):
@@ -77,7 +78,9 @@ class AgentBot(discord.Client):
 
     async def on_message(self, message: discord.Message):
         """
-        Called every time a message is sent in a channel/DM the bot can see.
+        The orchestrator for the 'Sense-Think-Act-Reflect' loop.
+        It handles incoming triggers, prepares multi-modal context, 
+        generates responses via a tiered AI router, and commits memories sequentially.
         """
         # Security/Sanity Check: Ignore messages sent by the bot itself to prevent infinite loops.
         if message.author.id == self.user.id:
@@ -218,15 +221,16 @@ class AgentBot(discord.Client):
                 else:
                     await message.channel.send(safe_reply)
             
-            # --- OUTSIDE TYPING BLOCK --- 
-            # The user has received the message, now we do background updates sequentially.
+            # --- SEQUENTIAL POST-PROCESSING (REFLECT) --- 
+            # We un-indent this from the typing block so the bot stops showing as 'typing'
+            # but we keep it INSIDE the processing_lock to ensure memory writes are atomic.
             
-            # 7. Append the AI's response to the short-term history so it remembers what it just said.
+            # 7. Update short-term context
             self.chat_history.append({"role": "assistant", "content": reply_text})
             
-            # 8. Trigger the sequential extraction (memory updates).
-            # We await this now to ensure all memory changes are committed before the lock releases.
-            # The reply has already been sent, so the user won't see "typing" anymore.
+            # 8. Trigger Semantic Extraction & Memory Hardening
+            # The background model (Llama or Claude) abstracts the exchange and updates
+            # the Categorized Knowledge Store (Identity, Interests, etc.) and summaries.
             await extract_and_update_memory(self.memory, clean_msg, reply_text)
 
 

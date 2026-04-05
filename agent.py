@@ -31,17 +31,15 @@ def is_complex_query(user_message: str) -> bool:
 
 async def generate_response(memory: MemoryManager, chat_history: list, image_data: list = None, audio_data: list = None) -> dict:
     """
-    The main routing gateway. Returns a dict {"text": str, "attachment": str|None}.
-
-    This function hydrates the system prompt with JSON memory, 
-    evaluates query complexity, and delegates the task to the correct LLM.
+    The Strategic Router & Context Hydrator.
     
-    Priority chain: Local Llama -> Claude -> OpenAI (GPT-4o)
-    For image queries: Claude -> OpenAI (local model is skipped, no vision support)
-    For audio queries: OpenAI only (only model with native audio input)
+    1. CONTEXT: Gathers categorized facts (Identity, Interests, etc.) from the Knowledge Store.
+    2. HYDRATION: Injects persistent memory into the shared System Prompt.
+    3. ROUTING: Evaluates media types and query complexity to select the optimal model tier.
+    
+    Returns: {"text": str, "attachment": str|None}
     """
-    # 1. Pull the raw JSON relationships and identities
-    # 1. Fetch persistent context from MemoryManager
+    # 1. Fetch persistent context from the Categorized Knowledge Store
     bot_info = memory.get_bot_identity()
     owner_info = memory.get_owner_relationship()
     
@@ -82,11 +80,12 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
     # 3. Extract the user's most recent message to evaluate for Routing
     latest_user_msg = next((msg["content"] for msg in reversed(chat_history) if msg["role"] == "user"), "")
     
-    # ---- 4. ROUTER DECISION LOGIC ----
+    # ---- 4. HIERARCHICAL ROUTER DECISION ----
     
-    # AUDIO PATH: Only OpenAI GPT-4o supports native audio input
+    # TIER 0: AUDIO PATH
+    # Only OpenAI GPT-4o currently supports native audio-to-text-to-audio flows reliably.
     if audio_data:
-        print(f"ROUTER: Audio detected -> Sending to OpenAI (native audio).")
+        print(f"ROUTER: Audio detected -> Sending to OpenAI (Tier 3).")
         try:
             res = await _generate_with_openai(formatted_system, chat_history, audio_data=audio_data)
             return {"text": res, "attachment": None}
@@ -94,14 +93,15 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
             print(f"Critical: OpenAI audio processing failed ({e}).")
             return {"text": "*(I couldn't process that voice message, sorry...)*", "attachment": None}
     
-    # IMAGE PATH: Local models typically lack vision, skip straight to cloud
+    # TIER 1-2: IMAGE PATH
+    # Local models lack reliable vision; skip straight to Claude (Primary) or OpenAI (Fallback).
     if image_data:
-        print(f"ROUTER: Image detected -> Sending to Claude (vision).")
+        print(f"ROUTER: Image detected -> Sending to Claude (Tier 2 Vision).")
         try:
             res = await _generate_with_claude(formatted_system, chat_history, image_data=image_data)
             return {"text": res, "attachment": None}
         except Exception as e:
-            print(f"Notice: Claude vision failed ({e}). Falling back to OpenAI vision...")
+            print(f"Notice: Claude vision failed ({e}). Falling back to Tier 3 (OpenAI)...")
             try:
                 res = await _generate_with_openai(formatted_system, chat_history, image_data=image_data)
                 return {"text": res, "attachment": None}
