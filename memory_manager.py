@@ -2,6 +2,7 @@ import json
 import os
 import time
 from typing import Dict, Any, List
+import settings
 
 # Define the local file paths where data will be stored
 BOT_FILE = "bot_identity.json"
@@ -35,11 +36,18 @@ class MemoryManager:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump({
                     "owner_id": None,     # Discord User ID of the owner
-                    "facts_about_owner": [], # Array of strings summarizing the owner
+                    "facts": {
+                        "identity": [],      # Name, age, role, etc.
+                        "interests": [],     # Hobbies, likes, dislikes
+                        "preferences": [],   # How the owner likes the bot to behave
+                        "routine": [],       # Daily schedule, work life
+                        "other": []          # Catch-all
+                    },
                     "relationship_stage": "stranger",  # stranger -> acquaintance -> friend
                     "preferred_language": None,  # e.g. "Chinese", "English", etc.
                     "last_interaction_timestamp": 0, # When they last talked
-                    "proactive_messages_ignored": 0  # Counter for backoff logic
+                    "proactive_messages_ignored": 0,  # Counter for backoff logic
+                    "summarized_memories": [] # Long-term abstracted conversation snapshots
                 }, f, indent=4)
                 
     # ==========================================
@@ -142,34 +150,82 @@ class MemoryManager:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
-    def add_facts_about_owner(self, facts):
-        """Appends newly learned facts about the owner, dodging duplicates."""
-        # Safety: if the LLM returned a single string instead of a list, wrap it
-        if isinstance(facts, str):
-            facts = [facts]
-        
+    def add_categorized_facts(self, categorized_facts: List[Dict[str, str]]):
+        """
+        Adds or merges facts into specific categories.
+        categorized_facts: list of {"category": str, "text": str}
+        """
         data = self.get_owner_relationship()
+        if "facts" not in data:
+            data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
+            
         added = False
-        for fact in facts:
-            # Skip single characters or very short junk
-            if not isinstance(fact, str) or len(fact) < 3:
+        for entry in categorized_facts:
+            cat = entry.get("category", "other").lower()
+            text = entry.get("text")
+            
+            if not text or len(text) < 3:
                 continue
-            if fact not in data["facts_about_owner"]:
-                data["facts_about_owner"].append(fact)
+                
+            if cat not in data["facts"]:
+                cat = "other"
+                
+            # Deduplication: is this exactly the same string?
+            if text not in data["facts"][cat]:
+                data["facts"][cat].append(text)
                 added = True
                 
-        # Proactive Relationship Logic:
-        # As the bot learns more facts, it naturally evolves its relationship stage.
-        # This makes the bot reach out less frequently (or differently) over time
-        # instead of relying on a rigid timeline.
-        if len(data["facts_about_owner"]) >= 5 and data["relationship_stage"] == "stranger":
-            data["relationship_stage"] = "acquaintance" # Became acquaintances!
-        elif len(data["facts_about_owner"]) >= 15 and data["relationship_stage"] == "acquaintance":
-            data["relationship_stage"] = "friend" # Became friends!
+        # Relationship logic (count total facts across all categories)
+        total_facts = sum(len(facts) for facts in data["facts"].values())
+        if total_facts >= 5 and data["relationship_stage"] == "stranger":
+            data["relationship_stage"] = "acquaintance"
+        elif total_facts >= 15 and data["relationship_stage"] == "acquaintance":
+            data["relationship_stage"] = "friend"
             
         if added:
             with open(OWNER_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
+            print(f"MEMORY: Added {len(categorized_facts)} categorized facts.")
+
+    def add_facts_about_owner(self, facts):
+        """[LEGACY] Redirects to add_categorized_facts as 'other' for compatibility."""
+        if isinstance(facts, str):
+            facts = [facts]
+        self.add_categorized_facts([{"category": "other", "text": f} for f in facts])
+                
+    def add_summarized_memory(self, memory_text: str):
+        """
+        Appends a new abstracted summary of a conversation to our long-term memory.
+        We cap this at 20 snippets to prevent the JSON file from becoming massive.
+        """
+        if not memory_text or not isinstance(memory_text, str) or len(memory_text) < 5:
+            return
+            
+        data = self.get_owner_relationship()
+        
+        # We use a list to store these snapshots chronologically
+        if "summarized_memories" not in data:
+            data["summarized_memories"] = []
+            
+        # Avoid duplicate summaries if they are identical
+        if memory_text not in data["summarized_memories"]:
+            data["summarized_memories"].append(memory_text)
+            
+            # 1. LRU-like count eviction: Keep only the 20 most recent high-level memories
+            MAX_MEMORIES = 20
+            if len(data["summarized_memories"]) > MAX_MEMORIES:
+                data["summarized_memories"] = data["summarized_memories"][-MAX_MEMORIES:]
+            
+            # 2. Total Character length eviction: Ensure the entire list is not too large for LLM context
+            # We prune from the beginning (oldest) until the total character count is under the limit
+            max_chars = settings.MAX_SUMMARIZED_MEMORIES_LEN
+            while data["summarized_memories"] and sum(len(m) for m in data["summarized_memories"]) > max_chars:
+                evicted = data["summarized_memories"].pop(0)
+                print(f"MEMORY: Evicted oldest summary memory to stay under {max_chars} character limit.")
+                
+            with open(OWNER_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            print(f"MEMORY: Archived a new abstracted conversation memory.")
                 
     # ==========================================
     # LANGUAGE PREFERENCE

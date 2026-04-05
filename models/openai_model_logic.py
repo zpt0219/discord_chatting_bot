@@ -118,7 +118,7 @@ async def _generate_with_openai(formatted_system: str, chat_history: list, image
                 except:
                     pass
 
-            result_text = execute_skill(tool_call.function.name, args)
+            result_text = await execute_skill(tool_call.function.name, args)
 
             # Append the result for this specific tool call
             openai_messages.append({
@@ -161,8 +161,22 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
                 "properties": {
                     "new_facts_about_owner": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Any new factual statements learned about the owner. Rephrase concisely. Omit if none."
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "string",
+                                    "enum": ["identity", "interests", "preferences", "routine", "other"],
+                                    "description": "Category: identity, interests, preferences, routine, or other."
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "The fact itself to remember."
+                                }
+                            },
+                            "required": ["category", "text"]
+                        },
+                        "description": "Any new factual statements learned about the owner. Categorize each one."
                     },
                     "bot_name": {
                         "type": "string",
@@ -176,6 +190,10 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
                     "preferred_language": {
                         "type": "string",
                         "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages."
+                    },
+                    "new_summarized_memory": {
+                        "type": "string",
+                        "description": "A high-level abstraction or summary of a significant conversation segment. Omit if the exchange is mundane."
                     }
                 }
             }
@@ -198,7 +216,7 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
                 args = json.loads(tool_call.function.arguments)
 
                 if "new_facts_about_owner" in args and args["new_facts_about_owner"]:
-                    memory.add_facts_about_owner(args["new_facts_about_owner"])
+                    memory.add_categorized_facts(args["new_facts_about_owner"])
 
                 bot_updates = {}
                 if "bot_name" in args and args["bot_name"]:
@@ -211,3 +229,6 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
 
                 if "preferred_language" in args and args["preferred_language"]:
                     memory.update_preferred_language(args["preferred_language"])
+                
+                if "new_summarized_memory" in args and args["new_summarized_memory"]:
+                    memory.add_summarized_memory(args["new_summarized_memory"])

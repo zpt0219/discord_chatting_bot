@@ -1,3 +1,4 @@
+import os
 import json
 from memory_manager import MemoryManager
 from skills import get_all_openai_tools, execute_skill
@@ -7,7 +8,7 @@ try:
 except ImportError:
     pass
 
-LOCAL_LLAMA_BASE_URL = "http://127.0.0.1:8888/v1"
+LOCAL_LLAMA_BASE_URL = os.getenv("LOCAL_LLM_SERVER", "")
 LOCAL_LLAMA_API_KEY = "dummy_key"
 
 openai_client = None
@@ -17,6 +18,9 @@ conversational_tools_openai = get_all_openai_tools()
 def get_openai_client() -> 'AsyncOpenAI':
     """Lazy instantiates the local Llama.cpp client using OpenAI's wrapper format."""
     global openai_client
+    if not LOCAL_LLAMA_BASE_URL:
+        return None
+        
     if openai_client is None:
         try:
             from openai import AsyncOpenAI
@@ -70,7 +74,7 @@ async def _generate_with_local(formatted_system: str, chat_history: list) -> str
                     pass
                     
             # Execute the matched python skill payload locally
-            result_text = execute_skill(tool_call.function.name, args)
+            result_text = await execute_skill(tool_call.function.name, args)
             
             # Inject the real-world output of the python script back to the LLM
             openai_messages.append({
@@ -117,8 +121,22 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                 "properties": {
                     "new_facts_about_owner": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Any new factual statements learned about the owner. Rephrase concisely. Omit if none."
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "string",
+                                    "enum": ["identity", "interests", "preferences", "routine", "other"],
+                                    "description": "Biological/social identity, hobby/interest, bot behavior preference, or daily schedule."
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "The fact itself. Rephrase concisely."
+                                }
+                            },
+                            "required": ["category", "text"]
+                        },
+                        "description": "Any new factual statements learned about the owner. Categorize each one. Omit if none."
                     },
                     "bot_name": {
                         "type": "string",
@@ -132,6 +150,10 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                     "preferred_language": {
                         "type": "string",
                         "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages (e.g. 'speak English', 'use Chinese')."
+                    },
+                    "new_summarized_memory": {
+                        "type": "string",
+                        "description": "A high-level abstraction or summary of a significant conversation segment (e.g., 'We explored the meaning of life'). Summarize key emotional or descriptive beats and rephrase for long-term recall. Omit if the exchange is mundane."
                     }
                 }
             }
@@ -157,7 +179,7 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                 
                 # Update underlying JSON Data logic safely
                 if "new_facts_about_owner" in args and args["new_facts_about_owner"]:
-                    memory.add_facts_about_owner(args["new_facts_about_owner"])
+                    memory.add_categorized_facts(args["new_facts_about_owner"])
                 
                 bot_updates = {}
                 if "bot_name" in args and args["bot_name"]:
@@ -170,3 +192,6 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
                 
                 if "preferred_language" in args and args["preferred_language"]:
                     memory.update_preferred_language(args["preferred_language"])
+                
+                if "new_summarized_memory" in args and args["new_summarized_memory"]:
+                    memory.add_summarized_memory(args["new_summarized_memory"])

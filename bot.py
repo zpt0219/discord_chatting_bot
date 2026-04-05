@@ -9,14 +9,32 @@ import time
 from memory_manager import MemoryManager
 from agent import generate_response, extract_and_update_memory
 
-# Load environment variables from the .env file (like DISCORD_TOKEN)
+import settings
+from prompts import PROACTIVE_PROMPT
 load_dotenv()
 
-# We retrieve the discord token from the environment securely.
-DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
+# =======================================================
+# SINGLETON INSTANCE CHECK (Anti-Multi-Reply)
+# =======================================================
+# This ensures that only one copy of the bot is running at a time.
+# If you try to start a second one, it will immediately exit.
+LOCK_FILE = ".bot.lock"
 
-# The specific username of the owner that the bot will respond to.
-OWNER_USERNAME = "cm6550"
+def acquire_lock():
+    """Tries to create a lock file to ensure singleton status."""
+    try:
+        # os.O_EXCL ensures the file is created ONLY if it doesn't exist (atomic)
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, 'w') as f:
+            f.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        return False
+
+def release_lock():
+    """Removes the lock file on exit."""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
 
 class AgentBot(discord.Client):
     """
@@ -38,6 +56,9 @@ class AgentBot(discord.Client):
         # Since this bot focuses on a single owner, we use one simple list.
         # This keeps the context window small while relying on JSON data for long-term memory.
         self.chat_history = []
+        
+        # Lock to prevent concurrent message processing (prevents duplicate replies)
+        self._processing_lock = asyncio.Lock()
         
     async def setup_hook(self):
         """
@@ -62,12 +83,11 @@ class AgentBot(discord.Client):
         if message.author.id == self.user.id:
             return
             
-        # We enforce the "owner-only" rule. The prompt asked to set cm6550 as the owner.
-        # We check both the username and global_name to be safe.
-        if message.author.name != OWNER_USERNAME and message.author.global_name != OWNER_USERNAME:
-            print(f"Ignored message from {message.author.name} (not '{OWNER_USERNAME}')")
-            # If the user is not cm6550, we simply drop the message and do nothing.
-            # (Uncomment the 'return' below to strictly enforce, currently bypassed to allow recruiters to test).
+        # We enforce the "owner-only" rule.
+        owner = settings.OWNER_USERNAME
+        # if message.author.name != owner and message.author.global_name != owner:
+            # print(f"Ignored message from {message.author.name} (not '{owner}')")
+            # If the user is not the owner, we simply drop the message and do nothing.
             # return
             
         # We save the discord user ID of whoever messages it. 
@@ -89,14 +109,16 @@ class AgentBot(discord.Client):
         clean_msg = clean_msg.replace(f"@{self.user.display_name}", "")   # @display_name
         clean_msg = clean_msg.strip()
             
-        # Show the "typing..." indicator in Discord so it feels more human while waiting for the LLM.
-        async with message.channel.typing():
+        # Acquire the lock so only one message is processed at a time.
+        # This prevents duplicate replies when messages arrive faster than the LLM can respond.
+        async with self._processing_lock:
             # 1. If memory is empty (bot restarted), dynamically fetch recent conversation from Discord.
             if len(self.chat_history) == 0:
                 print("Memory out of sync! Fetching recent history directly from Discord channel...")
                 temp_hist = []
-                # limit=20 pulls the 20 messages right before the one the user just sent
-                async for old_msg in message.channel.history(limit=20, before=message):
+                # Fetch history based on configuration limit
+                limit = settings.CHAT_HISTORY_FETCH_LIMIT
+                async for old_msg in message.channel.history(limit=limit, before=message):
                     role = "assistant" if old_msg.author.id == self.user.id else "user"
                     old_clean = old_msg.clean_content.replace(f"@{self.user.name}", "").strip()
                     if old_clean:
@@ -171,41 +193,55 @@ class AgentBot(discord.Client):
                 label = "[sent an image]"
             self.chat_history.append({"role": "user", "content": label})
             
-            # 4. Prune history to just the last 20 messages (10 full turns) to save LLM context tokens.
-            if len(self.chat_history) > 20:
-                self.chat_history = self.chat_history[-20:]
+            # 4. Prune history based on configuration limit
+            limit = settings.CHAT_HISTORY_PRUNE_LIMIT
+            if len(self.chat_history) > limit:
+                self.chat_history = self.chat_history[-limit:]
+                    
+            # 5. Call the LLM to generate a conversational reply within the typing block.
+            async with message.channel.typing():
+                res = await generate_response(
+                    self.memory, self.chat_history,
+                    image_data=image_data_list if image_data_list else None,
+                    audio_data=audio_data_list if audio_data_list else None
+                )
+                reply_text = res["text"]
+                attachment_path = res["attachment"]
                 
-            # 5. Call the LLM to generate a conversational reply.
-            # Media is passed separately so it only applies to the current turn (not stored in history).
-            reply = await generate_response(
-                self.memory, self.chat_history,
-                image_data=image_data_list if image_data_list else None,
-                audio_data=audio_data_list if audio_data_list else None
-            )
+                # 6. Actually send the generated reply back to Discord.
+                limit = settings.MAX_DISCORD_MSG_LEN
+                safe_reply = reply_text[:limit]
+                
+                if attachment_path and os.path.exists(attachment_path):
+                    file = discord.File(attachment_path)
+                    await message.channel.send(safe_reply, file=file)
+                else:
+                    await message.channel.send(safe_reply)
             
-            # 3. Actually send the generated reply back to Discord.
-            # We defensively truncate to 1999 characters to prevent Discord API crashes from overgrown LLM responses
-            safe_reply = reply[:1999]
-            await message.channel.send(safe_reply)
+            # --- OUTSIDE TYPING BLOCK --- 
+            # The user has received the message, now we do background updates sequentially.
             
-            # 4. Notify the memory manager that an interaction occurred (resets our backoff/idle timers).
-            self.memory.record_owner_reply()
+            # 7. Append the AI's response to the short-term history so it remembers what it just said.
+            self.chat_history.append({"role": "assistant", "content": reply_text})
             
-            # 5. Append the AI's response to the short-term history so it remembers what it just said.
-            self.chat_history.append({"role": "assistant", "content": reply})
-            
-            # 6. Kick off a background, non-blocking task that extracts facts from the conversation.
-            # This allows the bot to reply instantly without waiting for the fact-extraction LLM logic.
-            asyncio.create_task(
-                extract_and_update_memory(self.memory, clean_msg, reply)
-            )
+            # 8. Trigger the sequential extraction (memory updates).
+            # We await this now to ensure all memory changes are committed before the lock releases.
+            # The reply has already been sent, so the user won't see "typing" anymore.
+            await extract_and_update_memory(self.memory, clean_msg, reply_text)
 
-    @tasks.loop(minutes=1.0)
+
+    @tasks.loop(seconds=settings.PROACTIVE_LOOP_INTERVAL)
     async def proactive_loop(self):
         """
         A background loop that runs every 60 seconds.
         It evaluates if the bot should proactively message the owner based on relationship stage and idle time.
         """
+        # 1. Check for Active Conversation:
+        # If the bot is currently processing a message from the owner, skip proactive check.
+        if self._processing_lock.locked():
+            return
+
+        # 2. Extract context from MemoryManager
         owner_info = self.memory.get_owner_relationship()
         
         # If the bot has never been messaged, it doesn't know who the owner is yet (No ID). Can't reach out.
@@ -227,14 +263,11 @@ class AgentBot(discord.Client):
         # For testing purposes, these are short (2, 5, 15 minutes).
         # In a real bot, these would be hours (e.g., 3600 seconds, 14400 seconds).
         if stage == "stranger":
-            # Stage: Stranger/Just met. Reach out quickly to learn more (e.g. 2 minutes).
-            target_delay = 60 * 2
+            target_delay = settings.PROACTIVE_DELAY_STRANGER
         elif stage == "acquaintance":
-            # Stage: Acquaintance. Reach out moderately (e.g. 5 minutes).
-            target_delay = 60 * 5
+            target_delay = settings.PROACTIVE_DELAY_ACQUAINTANCE
         else:
-            # Stage: Friend. Very relaxed, respectful of space (e.g. 15 minutes).
-            target_delay = 60 * 15
+            target_delay = settings.PROACTIVE_DELAY_FRIEND
             
         # Exponential Backoff logic:
         # If the bot reaches out and the owner ignores it, `ignored_count` goes up.
@@ -254,23 +287,29 @@ class AgentBot(discord.Client):
             except Exception:
                 user = None
             if user:
-                # We prompt the LLM to generate a natural opening message, tricking it by putting this system prompt in the user's mouth.
-                prompt_text = "Your owner hasn't spoken to you in a while. Generate a brief, natural message to reach out to them based on what you know about them. If you haven't picked a name yet, you could mention being a bit lost or curious. Please output ONLY the exact message you'd send, no quotes."
+                # We prompt the LLM to generate a natural opening message
+                prompt_text = PROACTIVE_PROMPT
                 
                 # Append this temporary prompt to our history and send it to the LLM.
                 temp_hist = self.chat_history + [{"role": "user", "content": prompt_text}]
                 
                 try:
-                    reply = await generate_response(self.memory, temp_hist)
+                    res = await generate_response(self.memory, temp_hist)
+                    reply_text = res["text"]
+                    attachment_path = res["attachment"]
                     
                     # Send the AI's proactive text as a Direct Message
-                    await user.send(reply)
+                    if attachment_path and os.path.exists(attachment_path):
+                        file = discord.File(attachment_path)
+                        await user.send(reply_text, file=file)
+                    else:
+                        await user.send(reply_text)
                     
                     # Log that we sent a proactive message (increases the ignored_count counter by 1)
                     self.memory.record_proactive_message_sent()
                     
                     # Add to history
-                    self.chat_history.append({"role": "assistant", "content": reply})
+                    self.chat_history.append({"role": "assistant", "content": reply_text})
                 except Exception as e:
                     print(f"Failed to send proactive message: {e}")
 
@@ -282,9 +321,23 @@ class AgentBot(discord.Client):
         await self.wait_until_ready()
 
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        print("ERROR: DISCORD_TOKEN is missing in the environment.")
-    else:
-        # Instantiate and run our bot blockingly.
-        bot = AgentBot()
-        bot.run(DISCORD_TOKEN)
+    # Check if another bot instance is already running
+    if not acquire_lock():
+        print("\n" + "="*60)
+        print("CRITICAL ERROR: ANOTHER BOT INSTANCE IS ALREADY RUNNING!")
+        print(f"Please close the other terminal or kill the existing process.")
+        print("To force-start, manually delete the '.bot.lock' file.")
+        print("="*60 + "\n")
+        os._exit(1)
+
+    try:
+        token = os.environ.get("DISCORD_TOKEN")
+        if not token:
+            print("ERROR: DISCORD_TOKEN is missing in the environment.")
+        else:
+            # Instantiate and run our bot blockingly.
+            bot = AgentBot()
+            bot.run(token)
+    finally:
+        # Ensure the lock file is removed even if the bot crashes
+        release_lock()
