@@ -3,9 +3,7 @@ import json
 import datetime
 from memory_manager import MemoryManager
 
-from models.local_model_logic import _generate_with_local, _extract_with_local, LOCAL_LLAMA_BASE_URL
-from models.claude_model_logic import _generate_with_claude, _extract_with_claude
-from models.openai_model_logic import _generate_with_openai, _extract_with_openai
+from models.router import get_model_response, get_memory_extraction
 
 import settings
 from prompts import SYSTEM_PROMPT
@@ -77,73 +75,13 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
         language_instruction=lang_instr
     )
     
-    # 3. Extract the user's most recent message to evaluate for Routing
-    latest_user_msg = next((msg["content"] for msg in reversed(chat_history) if msg["role"] == "user"), "")
+    # 3. ROUTE TO MODELS (Tiered Router)
+    res = await get_model_response(
+        memory, formatted_system, chat_history,
+        image_data=image_data, audio_data=audio_data
+    )
     
-    # ---- 4. HIERARCHICAL ROUTER DECISION ----
-    
-    # TIER 0: AUDIO PATH
-    # Only OpenAI GPT-4o currently supports native audio-to-text-to-audio flows reliably.
-    if audio_data:
-        print(f"ROUTER: Audio detected -> Sending to OpenAI (Tier 3).")
-        try:
-            res = await _generate_with_openai(memory, formatted_system, chat_history, audio_data=audio_data)
-            return {"text": res, "attachment": None}
-        except Exception as e:
-            print(f"Critical: OpenAI audio processing failed ({e}).")
-            return {"text": "*(I couldn't process that voice message, sorry...)*", "attachment": None}
-    
-    # TIER 1-2: IMAGE PATH
-    # Local models lack reliable vision; skip straight to Claude (Primary) or OpenAI (Fallback).
-    if image_data:
-        print(f"ROUTER: Image detected -> Sending to Claude (Tier 2 Vision).")
-        try:
-            res = await _generate_with_claude(memory, formatted_system, chat_history, image_data=image_data)
-            return {"text": res, "attachment": None}
-        except Exception as e:
-            print(f"Notice: Claude vision failed ({e}). Falling back to Tier 3 (OpenAI)...")
-            try:
-                res = await _generate_with_openai(memory, formatted_system, chat_history, image_data=image_data)
-                return {"text": res, "attachment": None}
-            except Exception as e2:
-                print(f"Critical: Both vision providers failed ({e2}).")
-                return {"text": "*(I tried to look at the image, but my eyes are blurry...)*", "attachment": None}
-    
-    # TEXT PATH: Priority Local Llama (simple) -> Claude (complex or fallback) -> OpenAI (last resort)
-    # If the local server URL is missing, we bypass Tier 1 entirely
-    if not is_complex_query(latest_user_msg) and LOCAL_LLAMA_BASE_URL:
-        # Simple paths use the cheap, local fast path first
-        print(f"ROUTER: Message is simple -> Sending to Local Llama.")
-        try:
-            res = await _generate_with_local(memory, formatted_system, chat_history)
-        except Exception as e:
-            # Tier 2: Claude
-            print(f"Notice: Local Llama failed ({e}). Falling back to Claude...")
-            try:
-                res = await _generate_with_claude(memory, formatted_system, chat_history)
-            except Exception as e2:
-                # Tier 3: OpenAI
-                print(f"Notice: Claude also failed ({e2}). Falling back to OpenAI...")
-                try:
-                    res = await _generate_with_openai(memory, formatted_system, chat_history)
-                except Exception as e3:
-                    print(f"Critical: All 3 providers failed ({e3}).")
-                    res = "*(The bot seems to have lost its train of thought...)*"
-    else:
-        # Complex paths (or if local is disabled) skip local entirely and go straight to cloud
-        provider = "Claude" if not is_complex_query(latest_user_msg) else "Claude (Complex)"
-        print(f"ROUTER: Sending to {provider}.")
-        try:
-            res = await _generate_with_claude(memory, formatted_system, chat_history)
-        except Exception as e:
-            print(f"Notice: Claude failed ({e}). Falling back to OpenAI...")
-            try:
-                res = await _generate_with_openai(memory, formatted_system, chat_history)
-            except Exception as e2:
-                print(f"Critical: OpenAI also failed ({e2}).")
-                res = "*(I tried to think really hard about that, but my brain hurts...)*"
-                    
-    # ---- 5. POST-PROCESS ATTACHMENTS (GENERIC RELAY) ----
+    # 4. POST-PROCESS ATTACHMENTS (GENERIC RELAY)
     import re
     from skills import pending_attachments
     attachment_path = None
@@ -209,17 +147,7 @@ async def extract_and_update_memory(memory: MemoryManager, user_message: str, bo
     )
 
     try:
-        await _extract_with_local(memory, prompt)
-    except Exception as e:
-        print(f"Notice: Local Llama tool extraction failed ({e}). Falling back to Claude...")
-        try:
-            await _extract_with_claude(memory, prompt)
-        except Exception as e2:
-            print(f"Notice: Claude extraction also failed ({e2}). Falling back to OpenAI...")
-            try:
-                await _extract_with_openai(memory, prompt)
-            except Exception as e3:
-                print(f"Critical: All 3 extraction providers failed: {e3}")
+        await get_memory_extraction(memory, prompt)
     finally:
         # Sequential Writeback: Update timestamp only after abstraction logic is complete.
         # This prevents race conditions by ensuring only one write happens per conversation turn.

@@ -66,11 +66,17 @@ python bot.py
 
 ---
 
+## 🏗️ System Architecture
+[View the high-level architecture diagram and data flow here.](architecture.md)
+
+---
+
 ## 📁 Project Structure (Key Components)
 
-- `bot.py`: The entry point and Discord event handles.
-- `agent.py`: The "Router" logic and system prompt hydration.
-- `memory_manager.py`: Handles all JSON persistence and categorization logic.
+- `bot.py`: The entry point, Discord handles, and background loops for reminders and proactive messages.
+- `agent.py`: **Context & Prompting**: Gathers memories and formats the system prompt for the AI.
+- `models/router.py`: **The Switchboard**: Dynamically selects the best LLM (Llama, Claude, GPT-4o) and handles failover strategy.
+- `memory_manager.py`: Handles all in-memory caching, JSON persistence, and categorization logic.
 - `prompts.py`: Centralized system and extraction prompts.
 - `settings.py`: Global configuration for timers, thresholds, and limits.
 - `skills/`: Individual tool implementations (Search, Weather, Link Reader, etc.).
