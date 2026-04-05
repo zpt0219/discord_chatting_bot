@@ -31,6 +31,9 @@ CHAT_HISTORY_PRUNE_LIMIT = 20
 # Max total characters to keep in long-term summarized memories.
 MAX_SUMMARIZED_MEMORIES_LEN = 10000
 
+# Separator used when combining multiple queued messages into one query.
+QUEUE_COMBINE_SEPARATOR = "\n[followed by]\n"
+
 # =======================================================
 # PROACTIVE OUTREACH TIMERS (in seconds)
 # =======================================================

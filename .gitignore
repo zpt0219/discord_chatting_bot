@@ -23,3 +23,6 @@ env/
 
 # MacOS
 .DS_Store
+
+# Remove Tunnel folder, this is only for my own deployment
+tunnel/

@@ -87,7 +87,7 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
     if audio_data:
         print(f"ROUTER: Audio detected -> Sending to OpenAI (Tier 3).")
         try:
-            res = await _generate_with_openai(formatted_system, chat_history, audio_data=audio_data)
+            res = await _generate_with_openai(memory, formatted_system, chat_history, audio_data=audio_data)
             return {"text": res, "attachment": None}
         except Exception as e:
             print(f"Critical: OpenAI audio processing failed ({e}).")
@@ -98,12 +98,12 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
     if image_data:
         print(f"ROUTER: Image detected -> Sending to Claude (Tier 2 Vision).")
         try:
-            res = await _generate_with_claude(formatted_system, chat_history, image_data=image_data)
+            res = await _generate_with_claude(memory, formatted_system, chat_history, image_data=image_data)
             return {"text": res, "attachment": None}
         except Exception as e:
             print(f"Notice: Claude vision failed ({e}). Falling back to Tier 3 (OpenAI)...")
             try:
-                res = await _generate_with_openai(formatted_system, chat_history, image_data=image_data)
+                res = await _generate_with_openai(memory, formatted_system, chat_history, image_data=image_data)
                 return {"text": res, "attachment": None}
             except Exception as e2:
                 print(f"Critical: Both vision providers failed ({e2}).")
@@ -115,17 +115,17 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
         # Simple paths use the cheap, local fast path first
         print(f"ROUTER: Message is simple -> Sending to Local Llama.")
         try:
-            res = await _generate_with_local(formatted_system, chat_history)
+            res = await _generate_with_local(memory, formatted_system, chat_history)
         except Exception as e:
             # Tier 2: Claude
             print(f"Notice: Local Llama failed ({e}). Falling back to Claude...")
             try:
-                res = await _generate_with_claude(formatted_system, chat_history)
+                res = await _generate_with_claude(memory, formatted_system, chat_history)
             except Exception as e2:
                 # Tier 3: OpenAI
                 print(f"Notice: Claude also failed ({e2}). Falling back to OpenAI...")
                 try:
-                    res = await _generate_with_openai(formatted_system, chat_history)
+                    res = await _generate_with_openai(memory, formatted_system, chat_history)
                 except Exception as e3:
                     print(f"Critical: All 3 providers failed ({e3}).")
                     res = "*(The bot seems to have lost its train of thought...)*"
@@ -134,11 +134,11 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
         provider = "Claude" if not is_complex_query(latest_user_msg) else "Claude (Complex)"
         print(f"ROUTER: Sending to {provider}.")
         try:
-            res = await _generate_with_claude(formatted_system, chat_history)
+            res = await _generate_with_claude(memory, formatted_system, chat_history)
         except Exception as e:
             print(f"Notice: Claude failed ({e}). Falling back to OpenAI...")
             try:
-                res = await _generate_with_openai(formatted_system, chat_history)
+                res = await _generate_with_openai(memory, formatted_system, chat_history)
             except Exception as e2:
                 print(f"Critical: OpenAI also failed ({e2}).")
                 res = "*(I tried to think really hard about that, but my brain hurts...)*"

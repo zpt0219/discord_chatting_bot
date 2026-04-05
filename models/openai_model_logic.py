@@ -34,7 +34,7 @@ def get_openai_cloud_client() -> 'AsyncOpenAI':
     return openai_cloud_client
 
 
-async def _generate_with_openai(formatted_system: str, chat_history: list, image_data: list = None, audio_data: list = None) -> str:
+async def _generate_with_openai(memory: MemoryManager, formatted_system: str, chat_history: list, image_data: list = None, audio_data: list = None) -> str:
     """
     Tier 3 / Audio Specialist: Generates a response using OpenAI's GPT-4o.
     - PRIMARY: Handles all native voice/audio input processing.
@@ -119,7 +119,7 @@ async def _generate_with_openai(formatted_system: str, chat_history: list, image
                 except:
                     pass
 
-            result_text = await execute_skill(tool_call.function.name, args)
+            result_text = await execute_skill(tool_call.function.name, args, memory=memory)
 
             # Append the result for this specific tool call
             openai_messages.append({

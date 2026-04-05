@@ -22,6 +22,14 @@ from .link_reader_skill import get_openai_schema as link_reader_openai
 from .link_reader_skill import get_anthropic_schema as link_reader_anthropic
 from .link_reader_skill import execute as link_reader_execute
 
+from .news_skill import get_openai_schema as news_openai
+from .news_skill import get_anthropic_schema as news_anthropic
+from .news_skill import execute as news_execute
+
+from .reminder_skill import get_openai_schema as reminder_openai
+from .reminder_skill import get_anthropic_schema as reminder_anthropic
+from .reminder_skill import execute as reminder_execute
+
 import re
 
 # =======================================================
@@ -46,7 +54,9 @@ def get_all_openai_tools():
         search_openai(),
         identity_openai(),
         brain_openai(),
-        link_reader_openai()
+        link_reader_openai(),
+        news_openai(),
+        reminder_openai()
     ]
 
 def get_all_anthropic_tools():
@@ -60,10 +70,12 @@ def get_all_anthropic_tools():
         search_anthropic(),
         identity_anthropic(),
         brain_anthropic(),
-        link_reader_anthropic()
+        link_reader_anthropic(),
+        news_anthropic(),
+        reminder_anthropic()
     ]
 
-async def execute_skill(name: str, arguments: dict = None) -> str:
+async def execute_skill(name: str, arguments: dict = None, memory: 'MemoryManager' = None) -> str:
     """
     The central python executable router.
     When an LLM (either Local or Claude) decides it wants to use a tool, it halts text generation
@@ -83,9 +95,18 @@ async def execute_skill(name: str, arguments: dict = None) -> str:
     elif name == "show_identity_portrait":
         result = identity_execute(arguments)
     elif name == "get_my_profile":
-        result = brain_execute(arguments)
+        # Pass shared memory to brain skill if available
+        if memory:
+            from .brain_skill import execute_with_memory
+            result = execute_with_memory(memory)
+        else:
+            result = brain_execute(arguments)
     elif name == "read_url_content":
         result = await link_reader_execute(arguments)
+    elif name == "get_current_news":
+        result = news_execute(arguments)
+    elif name == "set_reminder":
+        result = reminder_execute(arguments, memory)
     else:
         return f"Skill execution failed: Unknown tool '{name}'."
     

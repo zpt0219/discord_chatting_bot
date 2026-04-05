@@ -18,26 +18,29 @@ conversational_tools_openai = get_all_openai_tools()
 def get_openai_client() -> 'AsyncOpenAI':
     """Lazy instantiates the local Llama.cpp client using OpenAI's wrapper format."""
     global openai_client
-    if not LOCAL_LLAMA_BASE_URL:
+    
+    # Dynamically check for the env var if it wasn't caught at module-level (import order safety)
+    url = LOCAL_LLAMA_BASE_URL or os.getenv("LOCAL_LLM_SERVER", "")
+    if not url:
         return None
         
     if openai_client is None:
         try:
             from openai import AsyncOpenAI
             # Tell the OpenAI library to point to our local llama.cpp server
-            openai_client = AsyncOpenAI(base_url=LOCAL_LLAMA_BASE_URL, api_key=LOCAL_LLAMA_API_KEY)
+            openai_client = AsyncOpenAI(base_url=url, api_key=LOCAL_LLAMA_API_KEY)
         except ImportError:
             pass
     return openai_client
 
-async def _generate_with_local(formatted_system: str, chat_history: list) -> str:
+async def _generate_with_local(memory: MemoryManager, formatted_system: str, chat_history: list) -> str:
     """
     Helper function to generate a response using the Local Llama Server.
     Includes a 2-step tool execution loop for seamless skill usage.
     """
     local_client = get_openai_client()
     if not local_client:
-        raise Exception("Local client unavailable. OpenAI python package may not be installed.")
+        raise Exception("Local Llama server is not configured in .env (LOCAL_LLM_SERVER) or 'openai' library is missing.")
         
     # Prepend the dynamic memory system prompt to the user's historical Discord chat
     openai_messages = [{"role": "system", "content": formatted_system}] + chat_history
@@ -74,7 +77,7 @@ async def _generate_with_local(formatted_system: str, chat_history: list) -> str
                     pass
                     
             # Execute the matched python skill payload locally
-            result_text = await execute_skill(tool_call.function.name, args)
+            result_text = await execute_skill(tool_call.function.name, args, memory=memory)
             
             # Inject the real-world output of the python script back to the LLM
             openai_messages.append({
@@ -108,7 +111,7 @@ async def _extract_with_local(memory: MemoryManager, prompt: str):
     """
     local_client = get_openai_client()
     if not local_client:
-        raise Exception("OpenAI pip library not fully installed.")
+        raise Exception("Local Llama server is not configured in .env (LOCAL_LLM_SERVER) or 'openai' library is missing.")
         
     # We define a strict update schema that forces arrays for facts
     openai_tools = [{

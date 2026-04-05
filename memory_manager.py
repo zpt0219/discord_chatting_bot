@@ -19,8 +19,15 @@ class MemoryManager:
     """
     
     def __init__(self):
-        # Automatically ensure files exist on startup
+        # Load raw data from disk into memory cache
         self._init_files()
+        self._bot_data = self._load_file(BOT_FILE)
+        self._owner_data = self._load_file(OWNER_FILE)
+
+    def _load_file(self, filename: str) -> Dict[str, Any]:
+        """Helper to safely load a JSON file from disk."""
+        with open(filename, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     def _init_files(self):
         """
@@ -51,243 +58,169 @@ class MemoryManager:
                     "preferred_language": None,  # e.g. "Chinese", "English", etc.
                     "last_interaction_timestamp": 0, # When they last talked
                     "proactive_messages_ignored": 0,  # Counter for backoff logic
-                    "summarized_memories": [] # Long-term abstracted conversation snapshots
+                    "summarized_memories": [], # Long-term abstracted conversation snapshots
+                    "reminders": [] # Upcoming alerts: [{"time": timestamp, "message": str, "triggered": bool}]
                 }, f, indent=4)
+
+    def save(self):
+        """
+        Explicitly commits the in-memory cache to the JSON files on disk.
+        This should be called at the end of a conversation turn to minimize I/O.
+        """
+        with open(BOT_FILE, "w", encoding="utf-8") as f:
+            json.dump(self._bot_data, f, indent=4)
+        with open(OWNER_FILE, "w", encoding="utf-8") as f:
+            json.dump(self._owner_data, f, indent=4)
+        print("MEMORY: Synchronized caches to disk.")
                 
     # ==========================================
     # BOT IDENTITY METHODS
     # ==========================================
     
     def get_bot_identity(self) -> Dict[str, Any]:
-        """Reads the bot_identity.json file and returns a dictionary."""
-        with open(BOT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        """Returns the current cached bot identity."""
+        return self._bot_data
             
     def update_bot_identity(self, updates: Dict[str, Any]):
-        """Updates specific fields in the bot's identity (like saving the name)."""
-        data = self.get_bot_identity()
-        data.update(updates)
-        with open(BOT_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        """Updates specific fields in the cached bot identity."""
+        self._bot_data.update(updates)
             
     def add_personality_traits(self, traits):
         """
         Appends new personality traits using LRU cache logic (max 100).
-        - Splits compound traits (e.g., "playful and humorous") into simple ones.
-        - Normalizes each trait (strips whitespace, lowercase comparison, remove trailing periods).
-        - Deduplicates using case-insensitive exact matching.
         """
-        # Safety: if the LLM returned a single string instead of a list, wrap it
         if isinstance(traits, str):
             traits = [traits]
-        
-        data = self.get_bot_identity()
-        changed = False
         
         # 1. Expand compound traits and normalize
         expanded_traits = []
         for raw_trait in traits:
-            if not isinstance(raw_trait, str):
-                continue
-            
-            # Split by common connectors: " and ", ",", "/", "&"
-            # We use a simple regex-like approach by replacing connectors with a common delimiter
+            if not isinstance(raw_trait, str): continue
             normalized = raw_trait.replace(" and ", "|").replace(",", "|").replace("/", "|").replace("&", "|")
             parts = [p.strip() for p in normalized.split("|")]
-            
             for p in parts:
-                # Clean up: remove trailing punctuation, lowercase for comparison
                 clean = p.strip().strip(".,!?;:\"'").lower()
                 if len(clean) >= 3 and clean not in ["none", "identified", "yet"]:
-                    # We store the original case but use lowercase for comparison
                     expanded_traits.append(p.strip().strip(".,!?;:\"'"))
         
         for trait in expanded_traits:
-            # Check for existing match (case-insensitive)
-            existing_index = None
-            for i, existing in enumerate(data["personality_traits"]):
-                if existing.lower() == trait.lower():
-                    existing_index = i
-                    break
-            
+            existing_index = next((i for i, ext in enumerate(self._bot_data["personality_traits"]) if ext.lower() == trait.lower()), None)
             if existing_index is not None:
-                # LRU: Move existing trait to the end (mark as recently used)
-                data["personality_traits"].append(data["personality_traits"].pop(existing_index))
-                changed = True
+                self._bot_data["personality_traits"].append(self._bot_data["personality_traits"].pop(existing_index))
             else:
-                # New trait: append to end
-                data["personality_traits"].append(trait)
-                changed = True
+                self._bot_data["personality_traits"].append(trait)
         
-        # LRU eviction: if over 100 traits, trim from the front (least recently used)
+        # Trim to LRU limit
         MAX_TRAITS = 100
-        if len(data["personality_traits"]) > MAX_TRAITS:
-            evicted = data["personality_traits"][:-MAX_TRAITS]
-            data["personality_traits"] = data["personality_traits"][-MAX_TRAITS:]
-            print(f"MEMORY: Evicted {len(evicted)} least-used personality traits (LRU cap: {MAX_TRAITS})")
-        
-        if changed:
-            with open(BOT_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+        if len(self._bot_data["personality_traits"]) > MAX_TRAITS:
+            self._bot_data["personality_traits"] = self._bot_data["personality_traits"][-MAX_TRAITS:]
 
     # ==========================================
     # OWNER RELATIONSHIP METHODS
     # ==========================================
 
     def get_owner_relationship(self) -> Dict[str, Any]:
-        """Reads the owner_relationship.json file and returns a dictionary."""
-        with open(OWNER_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        """Returns the current cached owner relationship data."""
+        return self._owner_data
             
     def update_owner_relationship(self, updates: Dict[str, Any]):
-        """Updates specific fields in the owner's relationship file."""
-        data = self.get_owner_relationship()
-        data.update(updates)
-        with open(OWNER_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        """Updates specific fields in the cached relationship file."""
+        self._owner_data.update(updates)
             
     def set_owner_id_if_null(self, owner_id: int):
-        """Saves the user's Discord ID if we haven't locked onto an owner yet."""
-        data = self.get_owner_relationship()
-        if data["owner_id"] is None:
-            data["owner_id"] = owner_id
-            with open(OWNER_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-
-    def record_owner_reply(self, owner_reply: str, bot_response: str, summarized_memory: str = None):
-        """
-        Commits a conversation turn to persistent storage.
-        
-        1. Updates the last interaction timestamp (Clock Reset).
-        2. Appends new abstracted memories (if provided by the background model).
-        3. Enforces a 10,000 character limit on memories to optimize context windows.
-        """
-        data = self.get_owner_relationship()
-        if "facts" not in data:
-            data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
-            
-        data["last_interaction_timestamp"] = time.time()
-        data["proactive_messages_ignored"] = 0
-        
-        if summarized_memory:
-            self.add_summarized_memory(summarized_memory)
-        else:
-            with open(OWNER_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+        """Saves the user's Discord ID if not set."""
+        if self._owner_data["owner_id"] is None:
+            self._owner_data["owner_id"] = owner_id
 
     def add_categorized_facts(self, categorized_facts: List[Dict[str, str]]):
         """
         Adds or merges facts into specific categories (Identity, Interests, Preferences, Routine, Other).
-        categorized_facts: list of {"category": str, "text": str}
         """
-        data = self.get_owner_relationship()
-        if "facts" not in data:
-            data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
+        if "facts" not in self._owner_data:
+            self._owner_data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
             
-        added = False
         for entry in categorized_facts:
             cat = entry.get("category", "other").lower()
             text = entry.get("text")
-            
-            if not text or len(text) < 3:
-                continue
+            if not text or len(text) < 3: continue
+            if cat not in self._owner_data["facts"]: cat = "other"
+            if text not in self._owner_data["facts"][cat]:
+                self._owner_data["facts"][cat].append(text)
                 
-            if cat not in data["facts"]:
-                cat = "other"
-                
-            # Deduplication: is this exactly the same string?
-            if text not in data["facts"][cat]:
-                data["facts"][cat].append(text)
-                added = True
-                
-        # Relationship logic (count total facts across all categories)
-        total_facts = sum(len(facts) for facts in data["facts"].values())
-        if total_facts >= 5 and data["relationship_stage"] == "stranger":
-            data["relationship_stage"] = "acquaintance"
-        elif total_facts >= 15 and data["relationship_stage"] == "acquaintance":
-            data["relationship_stage"] = "friend"
-            
-        if added:
-            with open(OWNER_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-            print(f"MEMORY: Added {len(categorized_facts)} categorized facts.")
+        # Update relationship stage based on total facts
+        total_facts = sum(len(facts) for facts in self._owner_data["facts"].values())
+        if total_facts >= 5 and self._owner_data["relationship_stage"] == "stranger":
+            self._owner_data["relationship_stage"] = "acquaintance"
+        elif total_facts >= 15 and self._owner_data["relationship_stage"] == "acquaintance":
+            self._owner_data["relationship_stage"] = "friend"
 
-    def add_facts_about_owner(self, facts):
-        """[LEGACY] Redirects to add_categorized_facts as 'other' for compatibility."""
-        if isinstance(facts, str):
-            facts = [facts]
-        self.add_categorized_facts([{"category": "other", "text": f} for f in facts])
-                
     def add_summarized_memory(self, memory_text: str):
         """
-        Appends a new abstracted summary of a conversation to our long-term memory.
-        We cap this at 20 snippets to prevent the JSON file from becoming massive.
+        Appends a new summary snapshot to the cached memory.
         """
-        if not memory_text or not isinstance(memory_text, str) or len(memory_text) < 5:
-            return
+        if not memory_text or not isinstance(memory_text, str) or len(memory_text) < 5: return
+        if "summarized_memories" not in self._owner_data:
+            self._owner_data["summarized_memories"] = []
             
-        data = self.get_owner_relationship()
-        
-        # We use a list to store these snapshots chronologically
-        if "summarized_memories" not in data:
-            data["summarized_memories"] = []
-            
-        # Avoid duplicate summaries if they are identical
-        if memory_text not in data["summarized_memories"]:
-            data["summarized_memories"].append(memory_text)
-            
-            # 1. LRU-like count eviction: Keep only the 20 most recent high-level memories
-            MAX_MEMORIES = 20
-            if len(data["summarized_memories"]) > MAX_MEMORIES:
-                data["summarized_memories"] = data["summarized_memories"][-MAX_MEMORIES:]
-            
-            # 2. Total Character length eviction: Ensure the entire list is not too large for LLM context
-            # We prune from the beginning (oldest) until the total character count is under the limit
+        if memory_text not in self._owner_data["summarized_memories"]:
+            self._owner_data["summarized_memories"].append(memory_text)
+            # Evict old summaries (count limit)
+            if len(self._owner_data["summarized_memories"]) > 20: 
+                self._owner_data["summarized_memories"] = self._owner_data["summarized_memories"][-20:]
+            # Evict old summaries (char total limit)
             max_chars = settings.MAX_SUMMARIZED_MEMORIES_LEN
-            while data["summarized_memories"] and sum(len(m) for m in data["summarized_memories"]) > max_chars:
-                evicted = data["summarized_memories"].pop(0)
-                print(f"MEMORY: Evicted oldest summary memory to stay under {max_chars} character limit.")
-                
-            with open(OWNER_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-            print(f"MEMORY: Archived a new abstracted conversation memory.")
-                
-    # ==========================================
-    # LANGUAGE PREFERENCE
-    # ==========================================
-    
-    def update_preferred_language(self, language: str):
-        """Updates the owner's preferred language in the relationship file."""
-        data = self.get_owner_relationship()
-        data["preferred_language"] = language
-        with open(OWNER_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-        print(f"MEMORY: Updated preferred language to '{language}'")
+            while self._owner_data["summarized_memories"] and sum(len(m) for m in self._owner_data["summarized_memories"]) > max_chars:
+                self._owner_data["summarized_memories"].pop(0)
 
-    # ==========================================
-    # PROACTIVE MESSAGING TRACKERS
-    # ==========================================
-                
+    def update_preferred_language(self, language: str):
+        """Updates cached preferred language."""
+        self._owner_data["preferred_language"] = language
+
     def record_owner_reply(self):
-        """
-        Called whenever the owner replies. 
-        Updates the timestamp so the bot knows the owner is actively chatting.
-        Resets the ignored counter back to 0, resetting the backoff delay.
-        """
-        data = self.get_owner_relationship()
-        data["last_interaction_timestamp"] = time.time()
-        data["proactive_messages_ignored"] = 0
-        with open(OWNER_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        """Resets interaction tracking in memory cache."""
+        self._owner_data["last_interaction_timestamp"] = time.time()
+        self._owner_data["proactive_messages_ignored"] = 0
             
     def record_proactive_message_sent(self):
-        """
-        Called when the bot sends an unprompted message. We increment the 'ignored' 
-        counter. If the user replies, 'record_owner_reply' resets it. If they don't, 
-        the counter goes up, triggering exponential backoff in bot.py.
-        """
-        data = self.get_owner_relationship()
-        data["last_interaction_timestamp"] = time.time()
-        data["proactive_messages_ignored"] += 1
-        with open(OWNER_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        """Increments ignored counter in memory cache."""
+        self._owner_data["last_interaction_timestamp"] = time.time()
+        self._owner_data["proactive_messages_ignored"] += 1
+        
+    # ==========================================
+    # REMINDER METHODS
+    # ==========================================
+
+    def add_reminder(self, minutes: int, message: str):
+        """Calculates target time and adds a reminder to the owner's cached data."""
+        if "reminders" not in self._owner_data:
+            self._owner_data["reminders"] = []
+            
+        target_time = time.time() + (minutes * 60)
+        self._owner_data["reminders"].append({
+            "time": target_time,
+            "message": message,
+            "triggered": False
+        })
+        return target_time
+
+    def get_due_reminders(self) -> List[Dict[str, Any]]:
+        """Returns all reminders that are due and haven't been triggered yet."""
+        if "reminders" not in self._owner_data:
+            return []
+            
+        now = time.time()
+        due = []
+        for r in self._owner_data["reminders"]:
+            if not r["triggered"] and r["time"] <= now:
+                due.append(r)
+        return due
+
+    def clean_old_reminders(self):
+        """Removes triggered reminders more than 24 hours old to keep the file lean."""
+        if "reminders" not in self._owner_data: return
+        now = time.time()
+        # Keep if not triggered OR if triggered less than 24h ago
+        self._owner_data["reminders"] = [
+            r for r in self._owner_data["reminders"]
+            if not r["triggered"] or (now - r["time"] < 86400)
+        ]
