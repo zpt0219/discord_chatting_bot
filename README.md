@@ -12,12 +12,13 @@ A sophisticated, persistent Discord agent designed for deep, context-aware inter
     - 🌟 **Interests**: Hobbies, media, and passions.
     - ⚙️ **Preferences**: How you want the bot to behave.
     - 📅 **Routine**: Your daily schedule and habits.
+    - 🧠 **Key Memories**: Abstracted conversation snapshots.
 - **Conversation Abstraction**: Periodically summarizes long conversations into high-level "memories" to maintain context without hitting token limits.
-- **Sequential Integrity**: Uses an atomic write-back system with a singleton lock to ensure memory is never corrupted during high-concurrency message bursts.
+- **Sequential Integrity**: Uses an atomic write-back system with a **singleton lock (psutil-powered)** to ensure memory is never corrupted during high-concurrency message bursts.
 
 ### 🖼️ Multi-Modal Intelligence
 - **Vision Integration**: Send images to the bot for analysis, feedback, or just to share a moment. Powered by Claude 3.5 Sonnet and GPT-4o.
-- **Voice Message Support**: Native support for Discord voice messages. The bot "listens" to your audio and responds appropriately.
+- **Thread-safe Attachments**: Skill outputs (like portraits or search images) are isolated per-request, preventing "cross-talk" in concurrent chats.
 
 ### 🚦 Intelligent Model Routing
 The bot optimizes for speed, cost, and complexity by dynamically selecting the best model for the task:
@@ -51,7 +52,8 @@ Create a `.env` file in the root directory:
 DISCORD_TOKEN=your_discord_bot_token
 ANTHROPIC_API_KEY=your_anthropic_api_key
 OPENAI_API_KEY=your_openai_api_key
-LOCAL_LLM_URL=http://localhost:1234/v1  # Optional: for local fallback
+LOCAL_LLM_SERVER=http://localhost:1234/v1  # Optional: for local fallback
+OWNER_USERNAME=your_discord_username
 ```
 
 ### 3. Install Dependencies
@@ -85,5 +87,10 @@ python bot.py
 ---
 
 ## 🛡️ Safety & Stability
-- **Locked Execution**: Uses a `.bot.lock` file to prevent multiple instances from running simultaneously.
-- **Graceful Fallbacks**: If one LLM provider is down, the bot automatically tries the next one in the priority chain.
+- **Locked Execution**: Uses a `.bot.lock` file (powered by `psutil`) to prevent multiple instances from running simultaneously.
+- **Graceful Fallbacks**: If one LLM provider is down (Local -> OpenAI -> Claude), the bot automatically tries the next one in the priority chain.
+
+---
+
+## 💬 Community & Support
+Join our Discord for updates, feedback, and support: [https://discord.gg/gU24EWjV](https://discord.gg/gU24EWjV)

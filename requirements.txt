@@ -2,6 +2,7 @@ discord.py
 anthropic
 openai
 python-dotenv
-ddgs
+duckduckgo-search
 aiohttp
 beautifulsoup4
+psutil
