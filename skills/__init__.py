@@ -39,10 +39,6 @@ import re
 # When you want to add a new skill to the bot (like checking weather, fetching crypto prices, etc.),
 # you create a new file in this directory and import its schemas and execution logic here.
 
-# Shared list that captures file attachment paths from tool results.
-# agent.py reads and clears this after each generation cycle.
-pending_attachments = []
-
 def get_all_openai_tools():
     """
     Aggregates all OpenAI formatted tool schemas from the skills folder.
@@ -75,16 +71,14 @@ def get_all_anthropic_tools():
         reminder_anthropic()
     ]
 
-async def execute_skill(name: str, arguments: dict = None, memory: 'MemoryManager' = None) -> str:
+async def execute_skill(name: str, arguments: dict = None, memory: 'MemoryManager' = None, attachments_list: list = None) -> str:
     """
     The central python executable router.
     When an LLM (either Local or Claude) decides it wants to use a tool, it halts text generation
     and passes the requested tool's 'name' to this function. This function maps that name 
     to the correct python script in this folder, executes it, and returns the real-world data back to the LLM.
     
-    If the tool result contains [ATTACH:path], the path is captured into pending_attachments
-    so agent.py can attach the file to the Discord message, regardless of whether the LLM
-    echoes the tag in its final response.
+    If attachments_list is provided, any [ATTACH:path] tags found in tool results are added to it.
     """
     if name == "get_current_time":
         result = time_execute(arguments)
@@ -100,6 +94,8 @@ async def execute_skill(name: str, arguments: dict = None, memory: 'MemoryManage
             from .brain_skill import execute_with_memory
             result = execute_with_memory(memory)
         else:
+            # Fallback to creating a temporary one if absolutely necessary, 
+            # though callers should always pass the live one.
             result = brain_execute(arguments)
     elif name == "read_url_content":
         result = await link_reader_execute(arguments)
@@ -112,8 +108,8 @@ async def execute_skill(name: str, arguments: dict = None, memory: 'MemoryManage
     
     # Intercept [ATTACH:path] tags from ANY tool result
     match = re.search(r"\[ATTACH:(.*?)\]", result)
-    if match:
-        pending_attachments.append(match.group(1).strip())
+    if match and attachments_list is not None:
+        attachments_list.append(match.group(1).strip())
         print(f"SKILL ROUTER: Captured attachment -> {match.group(1).strip()}")
     
     return result

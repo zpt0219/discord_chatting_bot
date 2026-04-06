@@ -28,12 +28,11 @@ def get_anthropic_schema():
         }
     }
 
-def execute(arguments=None):
+def execute_with_memory(memory: MemoryManager):
     """
-    Returns a formatted summary of the owner's categorized facts and relationship status.
+    Returns a formatted summary of the owner's categorized facts and relationship status
+    using the provided live MemoryManager instance.
     """
-    print("DEBUG: Brain tool called with arguments:", arguments)
-    memory = MemoryManager()
     owner_info = memory.get_owner_relationship()
     bot_info = memory.get_bot_identity()
     
@@ -52,7 +51,8 @@ def execute(arguments=None):
         "interests": "🌟 **Interests & Hobbies**",
         "preferences": "⚙️ **Your Preferences**",
         "routine": "📅 **Daily Routine**",
-        "other": "📝 **Other Notes**"
+        "other": "📝 **Other Notes**",
+        "key_memories": "🧠 **Key Memories**"
     }
     
     found_any = False
@@ -68,3 +68,12 @@ def execute(arguments=None):
         output.append("_I'm still getting to know you! I don't have many specific facts saved yet._")
         
     return "\n".join(output)
+
+def execute(arguments=None):
+    """
+    Fallback execute that creates its own MemoryManager. 
+    NOTE: This might read stale data from disk if a turn is mid-process.
+    """
+    print("WARNING: Brain tool called without live memory context. Reading from disk.")
+    memory = MemoryManager()
+    return execute_with_memory(memory)

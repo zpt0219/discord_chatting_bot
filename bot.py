@@ -11,6 +11,7 @@ import asyncio
 import time
 import collections
 import base64
+import psutil
 
 # Import our custom modules for handling memory and AI interactions
 from memory_manager import MemoryManager
@@ -28,12 +29,12 @@ from prompts import PROACTIVE_PROMPT
 LOCK_FILE = ".bot.lock"
 
 def is_pid_running(pid):
-    """Checks if the given PID is currently active on the system."""
+    """Checks if the given PID is currently active on the system using psutil."""
     if pid < 0: return False
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+        return psutil.pid_exists(pid)
+    except Exception as e:
+        print(f"DEBUG: Could not check PID {pid}: {e}")
         return False
 
 def acquire_lock():
@@ -48,10 +49,11 @@ def acquire_lock():
             else:
                 print(f"NOTICE: Found stale lock file for dead process {old_pid}. Cleaning up.")
                 os.remove(LOCK_FILE)
-        except Exception:
-            print(f"NOTICE: Uncovering corrupted/invalid lock file. Cleaning up.")
+        except (ValueError, Exception) as e:
+            print(f"NOTICE: Uncovering corrupted/invalid lock file ({e}). Cleaning up.")
             try: os.remove(LOCK_FILE)
-            except: pass
+            except Exception as remove_err:
+                print(f"WARNING: Could not remove corrupted lock file: {remove_err}")
 
     try:
         # os.O_EXCL ensures the file is created ONLY if it doesn't exist (atomic)
@@ -126,9 +128,10 @@ class AgentBot(discord.Client):
             
         # We enforce the "owner-only" rule.
         owner = settings.OWNER_USERNAME
-        # if message.author.name != owner and message.author.global_name != owner:
-            # print(f"Ignored message from {message.author.name} (not '{owner}')")
+        if message.author.name != owner and message.author.global_name != owner:
+            print(f"Ignored message from {message.author.name} (not '{owner}')")
             # If the user is not the owner, we simply drop the message and do nothing.
+            # TODO: For testing purpose, allow anyone to interact
             # return
             
         # We save the discord user ID of whoever messages it. 
@@ -236,9 +239,12 @@ class AgentBot(discord.Client):
                     # 5. Call LLM (with Final Safety Net)
                     try:
                         async with target_message.channel.typing():
+                            # Thread-safe attachment capturing per-request
+                            current_attachments = []
                             res = await generate_response(
                                 self.memory, self.chat_history,
-                                image_data=image_data_list if image_data_list else None
+                                image_data=image_data_list if image_data_list else None,
+                                attachments_list=current_attachments
                             )
                             reply_text = res["text"]
                             attachment_path = res["attachment"]
@@ -260,9 +266,10 @@ class AgentBot(discord.Client):
                     # If it did crash, we still want to keep history but maybe warn the AI later.
                     self.chat_history.append({"role": "assistant", "content": reply_text})
                     await extract_and_update_memory(self.memory, final_clean_msg, reply_text)
+                    
+                    # NEW: Save the in-memory cache to disk after a full turn while still holding the lock.
+                    await self.memory.save()
 
-            # NEW: Save the in-memory cache to disk after a full turn (or batch of turns) finishes.
-            await self.memory.save()
         finally:
             self._active_contexts.remove(context_id)
 
@@ -311,7 +318,7 @@ class AgentBot(discord.Client):
         # We multiply the target_delay by 2^ignored_count.
         # Example: if 2 mins target, and they ignore it once, it becomes 4 mins. Ignore again, 8 mins.
         # This prevents the bot from becoming a needy spammer.
-        multiplier = (2 ** min(10,gnored_count)) if ignored_count > 0 else 1
+        multiplier = (2 ** min(10, ignored_count)) if ignored_count > 0 else 1
         target_delay *= multiplier
         
         # If enough time has passed...
@@ -383,19 +390,20 @@ class AgentBot(discord.Client):
                 except Exception as e:
                     print(f"Error sending individual reminder: {e}")
             
-            # 3. Save the cache to disk (atomic write)
-            await self.memory.save()
-            
-            # 4. Periodically clean old reminders
+            # 3. Periodically clean old reminders BEFORE saving
             self.memory.clean_old_reminders()
+            
+            # 4. Save the cache to disk (atomic write)
+            await self.memory.save()
             
         except Exception as e:
             print(f"Critical error in reminder_loop: {e}")
 
     @proactive_loop.before_loop
-    async def before_proactive_loop(self):
+    @reminder_loop.before_loop
+    async def before_loops(self):
         """
-        Ensures the bot is fully connected to Discord before starting the loop.
+        Ensures the bot is fully connected to Discord before starting the loops.
         """
         await self.wait_until_ready()
 

@@ -31,53 +31,61 @@ class MemoryManager:
     def _load_file(self, filename: str) -> Dict[str, Any]:
         """Helper to safely load a JSON file from disk with corruption recovery."""
         try:
+            if not os.path.exists(filename):
+                return {}
             with open(filename, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
+        except (json.JSONDecodeError, PermissionError) as e:
             # If the file exists but we can't load it (corrupted or empty), back it up and reset
-            if os.path.exists(filename):
-                backup_name = f"{filename}.corrupted_{int(time.time())}"
-                try:
-                    os.rename(filename, backup_name)
-                    print(f"CRITICAL: {filename} was corrupted/empty! Backed up to {backup_name} and resetting.")
-                except:
-                    print(f"CRITICAL: {filename} is unreadable and cannot be renamed.")
+            backup_name = f"{filename}.corrupted_{int(time.time())}"
+            try:
+                os.rename(filename, backup_name)
+                print(f"CRITICAL: {filename} was corrupted! Backed up to {backup_name}.")
+            except Exception as rename_err:
+                print(f"CRITICAL: {filename} is unreadable and cannot be renamed: {rename_err}")
             
             # Return an empty dictionary to trigger re-initialization in callers
             return {}
 
     def _init_files(self):
         """
-        Creates the JSON files with default, empty templates if they don't already exist.
+        Creates the JSON files with default, empty templates if they don't already exist
+        or if the in-memory cache is empty.
         """
-        # 1. Initialize Bot Identity File
-        if not os.path.exists(BOT_FILE):
-            with open(BOT_FILE, "w", encoding="utf-8") as f:
-                json.dump({
-                    "name": None,         # The bot's chosen name
-                    "personality_traits": [], # E.g., ["Sarcastic", "Curious"]
-                    "creation_timestamp": time.time()
-                }, f, indent=4)
+        # 1. Initialize Bot Identity
+        bot_defaults = {
+            "name": None,
+            "personality_traits": [],
+            "creation_timestamp": time.time()
+        }
+        if not self._bot_data:
+            self._bot_data = bot_defaults
+            if not os.path.exists(BOT_FILE):
+                with open(BOT_FILE, "w", encoding="utf-8") as f:
+                    json.dump(bot_defaults, f, indent=4)
         
-        # 2. Initialize Owner Relationship File
-        if not os.path.exists(OWNER_FILE):
-            with open(OWNER_FILE, "w", encoding="utf-8") as f:
-                json.dump({
-                    "owner_id": None,     # Discord User ID of the owner
-                    "facts": {
-                        "identity": [],      # Name, age, role, etc.
-                        "interests": [],     # Hobbies, likes, dislikes
-                        "preferences": [],   # How the owner likes the bot to behave
-                        "routine": [],       # Daily schedule, work life
-                        "key_memories": [],   # NEW: Abstracted conversation snapshots
-                        "other": []          # Catch-all
-                    },
-                    "relationship_stage": "stranger",  # stranger -> acquaintance -> friend
-                    "preferred_language": None,  # e.g. "Chinese", "English", etc.
-                    "last_interaction_timestamp": 0, # When they last talked
-                    "proactive_messages_ignored": 0,  # Counter for backoff logic
-                    "reminders": [] # Upcoming alerts: [{"time": timestamp, "message": str, "triggered": bool}]
-                }, f, indent=4)
+        # 2. Initialize Owner Relationship
+        owner_defaults = {
+            "owner_id": None,
+            "facts": {
+                "identity": [],
+                "interests": [],
+                "preferences": [],
+                "routine": [],
+                "key_memories": [],
+                "other": []
+            },
+            "relationship_stage": "stranger",
+            "preferred_language": None,
+            "last_interaction_timestamp": 0,
+            "proactive_messages_ignored": 0,
+            "reminders": []
+        }
+        if not self._owner_data:
+            self._owner_data = owner_defaults
+            if not os.path.exists(OWNER_FILE):
+                with open(OWNER_FILE, "w", encoding="utf-8") as f:
+                    json.dump(owner_defaults, f, indent=4)
 
     async def save(self):
         """
@@ -110,7 +118,8 @@ class MemoryManager:
             # If we failed, try to cleanup the temp file so it doesn't clutter
             if os.path.exists(temp_filename):
                 try: os.remove(temp_filename)
-                except: pass
+                except Exception as cleanup_err:
+                    print(f"WARNING: Could not remove temp file {temp_filename}: {cleanup_err}")
             raise e
                 
     # ==========================================

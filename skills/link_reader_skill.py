@@ -53,9 +53,10 @@ async def execute(arguments):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
+    timeout = aiohttp.ClientTimeout(total=10)
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as response:
+            async with session.get(url, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
                     return f"Error: Could not access the page (HTTP {response.status})."
                 

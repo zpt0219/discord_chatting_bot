@@ -13,22 +13,8 @@ from prompts import SYSTEM_PROMPT, MEMORY_EXTRACTION_PROMPT
 # MAIN CHAT GENERATION (WITH ROUTER)
 # ===============================================
 
-def is_complex_query(user_message: str) -> bool:
-    """
-    A fast heuristics router to determine query complexity.
-    """
-    msg = user_message.lower()
-    
-    # Thresholds are now adjustable in settings.py
-    len_threshold = settings.ROUTER_COMPLEXITY_LEN_THRESHOLD
-    keywords = settings.ROUTER_COMPLEX_KEYWORDS
-    
-    # If the message is long (deep explanation), or contains a complex requesting keyword, route to Claude.
-    if len(msg) > len_threshold or any(keyword in msg for keyword in keywords):
-        return True
-    return False
 
-async def generate_response(memory: MemoryManager, chat_history: list, image_data: list = None) -> dict:
+async def generate_response(memory: MemoryManager, chat_history: list, image_data: list = None, attachments_list: list = None) -> dict:
     """
     The Strategic Router & Context Hydrator.
     
@@ -107,20 +93,20 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
     )
     
     # 3. ROUTE TO MODELS (Tiered Router)
+    # We pass the attachments_list down so tools called during the model loop can populate it.
     res = await get_model_response(
         memory, formatted_system, chat_history,
-        image_data=image_data
+        image_data=image_data, attachments_list=attachments_list
     )
     
     # 4. POST-PROCESS ATTACHMENTS (GENERIC RELAY)
     import re
-    from skills import pending_attachments
     attachment_path = None
     
     # Check if any tool captured an attachment during this generation cycle
-    if pending_attachments:
-        attachment_path = pending_attachments.pop(0)
-        print(f"AGENT: Attaching file -> {attachment_path}")
+    if attachments_list:
+        attachment_path = attachments_list[0]
+        print(f"AGENT: Using first attachment -> {attachment_path}")
     
     # Also clean up any [ATTACH:] tags that might have leaked into the LLM's text
     res = re.sub(r"\[ATTACH:.*?\]", "", res).strip()

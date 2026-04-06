@@ -33,7 +33,7 @@ def get_openai_client() -> 'AsyncOpenAI':
             pass
     return openai_client
 
-async def _generate_with_local(memory: MemoryManager, formatted_system: str, chat_history: list) -> str:
+async def _generate_with_local(memory: MemoryManager, formatted_system: str, chat_history: list, attachments_list: list = None) -> str:
     """
     Helper function to generate a response using the Local Llama Server.
     Includes a 2-step tool execution loop for seamless skill usage.
@@ -79,7 +79,7 @@ async def _generate_with_local(memory: MemoryManager, formatted_system: str, cha
                     try: args = json.loads(tool_call.function.arguments)
                     except: pass
                 
-                result_text = await execute_skill(tool_call.function.name, args, memory=memory)
+                result_text = await execute_skill(tool_call.function.name, args, memory=memory, attachments_list=attachments_list)
                 
                 # Append tool result
                 openai_messages.append({

@@ -1,4 +1,4 @@
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 
 # =======================================================
 # NEWS SKILL (TOOL CALLING)
@@ -51,10 +51,11 @@ def execute(arguments: dict = None) -> str:
     query = arguments["query"]
     results = []
     
-    # 1. Try dedicated news search (force DuckDuckGo engine which is often more reliable)
+    # 1. Try dedicated news search. Note: older versions used 'engine', 
+    # but newer duckduckgo_search versions (v6+) usually do not.
     try:
         print(f"DEBUG: Attempting news search for '{query}'...")
-        results = DDGS().news(query, engine='duckduckgo', max_results=5)
+        results = DDGS().news(query, max_results=5)
     except Exception as e:
         print(f"DEBUG: News search hit a network/API issue: {e}. Falling back to general search...")
         results = [] # Reset to trigger next fallback

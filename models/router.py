@@ -19,7 +19,7 @@ def is_complex_query(user_message: str) -> bool:
         return True
     return False
 
-async def get_model_response(memory, formatted_system, chat_history, image_data=None) -> str:
+async def get_model_response(memory, formatted_system, chat_history, image_data=None, attachments_list=None) -> str:
     """
     Orchestrates the tiered response generation (Llama -> OpenAI -> Claude).
     """
@@ -29,11 +29,11 @@ async def get_model_response(memory, formatted_system, chat_history, image_data=
     if image_data:
         print(f"ROUTER: Image detected -> Sending to OpenAI (Tier 2 Vision).")
         try:
-            return await _generate_with_openai(memory, formatted_system, chat_history, image_data=image_data)
+            return await _generate_with_openai(memory, formatted_system, chat_history, image_data=image_data, attachments_list=attachments_list)
         except Exception as e:
             print(f"Notice: OpenAI vision failed ({e}). Falling back to Tier 3 (Claude)...")
             try:
-                return await _generate_with_claude(memory, formatted_system, chat_history, image_data=image_data)
+                return await _generate_with_claude(memory, formatted_system, chat_history, image_data=image_data, attachments_list=attachments_list)
             except Exception as e2:
                 print(f"Critical: Both vision providers failed ({e2}).")
                 return settings.ERROR_MSG_VISION
@@ -42,15 +42,15 @@ async def get_model_response(memory, formatted_system, chat_history, image_data=
     if not is_complex_query(latest_user_msg) and LOCAL_LLAMA_BASE_URL:
         print(f"ROUTER: Message is simple -> Sending to Local Llama.")
         try:
-            return await _generate_with_local(memory, formatted_system, chat_history)
+            return await _generate_with_local(memory, formatted_system, chat_history, attachments_list=attachments_list)
         except Exception as e:
             print(f"Notice: Local Llama failed ({e}). Falling back to OpenAI...")
             try:
-                return await _generate_with_openai(memory, formatted_system, chat_history)
+                return await _generate_with_openai(memory, formatted_system, chat_history, attachments_list=attachments_list)
             except Exception as e2:
                 print(f"Notice: OpenAI also failed ({e2}). Falling back to Claude...")
                 try:
-                    return await _generate_with_claude(memory, formatted_system, chat_history)
+                    return await _generate_with_claude(memory, formatted_system, chat_history, attachments_list=attachments_list)
                 except Exception as e3:
                     print(f"Critical: All 3 providers failed ({e3}).")
                     return settings.ERROR_MSG_GENERIC
@@ -58,11 +58,11 @@ async def get_model_response(memory, formatted_system, chat_history, image_data=
         provider = "OpenAI" if not is_complex_query(latest_user_msg) else "OpenAI (Complex)"
         print(f"ROUTER: Sending to {provider}.")
         try:
-            return await _generate_with_openai(memory, formatted_system, chat_history)
+            return await _generate_with_openai(memory, formatted_system, chat_history, attachments_list=attachments_list)
         except Exception as e:
             print(f"Notice: OpenAI failed ({e}). Falling back to Claude...")
             try:
-                return await _generate_with_claude(memory, formatted_system, chat_history)
+                return await _generate_with_claude(memory, formatted_system, chat_history, attachments_list=attachments_list)
             except Exception as e2:
                 print(f"Critical: Claude also failed ({e2}).")
                 return settings.ERROR_MSG_GENERIC

@@ -139,7 +139,7 @@ def _purge_orphaned_tool_blocks(messages: list) -> list:
     return cleaned
 
 
-async def _generate_with_claude(memory: MemoryManager, formatted_system: str, chat_history: list, image_data: list = None) -> str:
+async def _generate_with_claude(memory: MemoryManager, formatted_system: str, chat_history: list, image_data: list = None, attachments_list: list = None) -> str:
     """
     Tier 2 / Vision Primary: Generates a response using Anthropic Claude.
     - PRIMARY: Handles all high-complexity reasoning and multi-step logic.
@@ -201,7 +201,7 @@ async def _generate_with_claude(memory: MemoryManager, formatted_system: str, ch
             for block in claude_res.content:
                 if getattr(block, "type", None) == "tool_use":
                     # Execute the skill logic
-                    result_text = await execute_skill(block.name, block.input, memory=memory)
+                    result_text = await execute_skill(block.name, block.input, memory=memory, attachments_list=attachments_list)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
