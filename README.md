@@ -16,15 +16,11 @@ A sophisticated, persistent Discord agent designed for deep, context-aware inter
 - **Conversation Abstraction**: Periodically summarizes long conversations into high-level "memories" to maintain context without hitting token limits.
 - **Sequential Integrity**: Uses an atomic write-back system with a **singleton lock (psutil-powered)** to ensure memory is never corrupted during high-concurrency message bursts.
 
-### 🖼️ Multi-Modal Intelligence
-- **Vision Integration**: Send images to the bot for analysis, feedback, or just to share a moment. Powered by Claude 3.5 Sonnet and GPT-4o.
-- **Thread-safe Attachments**: Skill outputs (like portraits or search images) are isolated per-request, preventing "cross-talk" in concurrent chats.
-
 ### 🚦 Intelligent Model Routing
 The bot optimizes for speed, cost, and complexity by dynamically selecting the best model for the task:
-1.  **Local Llama 3**: Handles simple conversational turns and small-talk locally for maximum privacy and speed.
-2.  **Claude 3.5 Sonnet**: The primary "brain" for complex analysis, creative writing, and image vision.
-3.  **OpenAI GPT-4o**: The final fallback and primary engine for native audio processing.
+1.  **Local Model via Llama.cpp**: Handles simple conversational turns and small-talk locally for maximum privacy and speed.
+2.  **OpenAI GPT-4o**: The primary "brain" for complex analysis, creative writing, and image vision.
+3.  **Claude 4.5 Sonnet**: The final fallback model if OpenAI is unavailable.
 
 ### 🛠️ Integrated Skills & Tools
 - **Web Search**: Real-time browsing to answer factual questions.
