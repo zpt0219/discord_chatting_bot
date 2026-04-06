@@ -1,6 +1,6 @@
 # 🏗️ System Architecture Overview
 
-This diagram visualizes how the bot processes messages, routes between AI models, and manages persistent memory.
+This diagram visualizes how the bot processes messages, routes between AI models, and manages persistent, categorized memory.
 
 ```mermaid
 graph TD
@@ -32,22 +32,27 @@ graph TD
     
     subgraph "Perception (Input Processing)"
         Bot --> Vision["👀 Vision (Images)"]
-        Bot --> Audio["👂 Audio (Voice)"]
-        Vision & Audio --> Agent
+        Vision --> Agent
     end
     
     subgraph "State & Memory"
         Agent --> Memory["📂 memory_manager.py"]
-        Memory --> OwnerData[("👤 owner_relationship.json")]
-        Memory --> BotData[("🤖 bot_identity.json")]
+        Memory --> Data[("👤 owner_relationship.json")]
+        
+        subgraph "Fact Categories"
+            Data --> ID["Identity"]
+            Data --> INT["Interests"]
+            Data --> PREF["Preferences"]
+            Data --> KM["🧠 Key Memories"]
+        end
         
         Bot --> BG["🔄 Background Tasks"]
         BG --> RemLoop["🔔 Reminder Loop"]
         BG --> Proactive["📡 Proactive Loop"]
-        BG --> Reflection["🧠 AI Reflection (Extraction)"]
+        BG --> Reflection["🧠 AI Reflection"]
         
         Reflection --> Router
-        Router -.-> |"Update Facts/Traits"| Memory
+        Router -.-> |"Update Categories"| Memory
         
         RemLoop & Proactive --> Memory
     end
@@ -61,17 +66,19 @@ graph TD
 
 | Component | Responsibility |
 | :--- | :--- |
-| **`bot.py`** | **Ingestion & UI**: Handles Discord connection, message queuing, and **Vision/Audio attachment downloads**. Also runs background loops. |
-| **`agent.py`** | **Context & Multi-modal Orchestration**: Gathers memories, formats the system prompt, and prepares media payloads for the Router. |
-| **`models/router.py`** | **Tiered Strategy**: Decides which model to use (Llama, Claude, GPT-4o) based on complexity and media types. Handles failovers. |
-| **`memory_manager.py`** | Manages in-memory caching and atomic disk writes for the JSON databases, ensuring performance and persistence. |
-| **`skills/`** | A modular directory with **8+ core tools**: Time, Weather, Web Search, Identity Moods, News, Reminders, Brain Profile, and Link Reader. |
-| **`models/`** | Contains the specific API wrappers and multi-modal processing logic for each provider (Llama, Claude, OpenAI). |
-| **`prompts.py`** | Stores the system personality and the proactive outreach logic. |
+| **`bot.py`** | **Ingestion & UI**: Handles Discord connection, message queuing, and downloads vision attachments. Runs background proactive loops. |
+| **`agent.py`** | **Context & Multi-modal Orchestration**: Formats the system prompt by combining **Identity Traits**, **Categorized Facts**, and **Recent Raw Exchanges** for immediate context. |
+| **`models/router.py`** | **Tiered Strategy**: Decides which model to use (Llama, Claude, GPT-4o) based on complexity and image data. Handles failovers and tool execution. |
+| **`memory_manager.py`** | **Atomic Persistence**: Manages JSON knowledge stores and performs **async, atomic disk writes** via temp-and-swap to prevent data corruption. |
+| **`skills/`** | A modular directory with **8+ core tools**: Time, Weather, Web Search, News, Reminders, Brain Profile, Identity Moods, and Link Reader. |
+| **`models/`** | Specific API wrappers and vision logic. Each provider (Claude, OpenAI, Local) implements its own extraction tool schema. |
+| **`prompts.py`** | Stores the core personality (System Prompt), proactive logic, and the background memory extraction template. |
 
 ### 🔄 The Message Flow
-1.  **Ingest**: `bot.py` receives and combines rapid messages into a single batch.
-2.  **Think**: `agent.py` fetches memory and routes to the best-fit LLM (Llama, Claude, or GPT-4o).
-3.  **Act**: The LLM may call a **Skill** (News, Search, etc.) to get real-world data.
-4.  **Reflect (Background)**: Once the reply is sent, the bot triggers an **AI Reflection** task. The LLM then "re-reads" the conversation to extract new facts about the owner or adopted bot traits, then calls `update_memory` to commit them to JSON.
-5.  **Notify (Background)**: If a **Reminder** is set, a background loop wakes up later and DMs the user independently.
+
+1.  **Ingest**: `bot.py` batches rapid user messages into a single thought session.
+2.  **Context**: `agent.py` pulls categorized memories and injects the **Last 5 Raw Turns** into the prompt.
+3.  **Think**: `router.py` selects the best model tier (Local -> Cloud) for the request complexity.
+4.  **Act**: The LLM executes **Skills** (e.g., searching or reading links) to fetch real-world data.
+5.  **Reflect**: After each reply, a background task performs **AI Reflection**. It extracts new facts and **One-Sentence Key Memories** to update the categorized facts.
+6.  **Commit**: The `MemoryManager` flushes updates atomically to `owner_relationship.json`, ensuring consistency across reboots.

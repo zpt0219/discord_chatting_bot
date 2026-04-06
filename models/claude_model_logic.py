@@ -38,9 +38,11 @@ def _extract_text_from_content(content) -> str:
                 text_parts.append(block)
             # Handle Anthropic SDK objects (TextBlock, ToolUseBlock, etc.)
             elif hasattr(block, "type"):
-                if getattr(block, "type", None) == "text" and hasattr(block, "text"):
-                    text_parts.append(block.text)
-                # Skip tool_use, tool_result, and any other block types
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    # Safely extract text from a TextBlock
+                    text_parts.append(getattr(block, "text", ""))
+                # Explicitly ignore other types (tool_use, tool_result) to avoid attribute errors
         return " ".join(text_parts) if text_parts else ""
     
     # Fallback: convert to string
@@ -172,45 +174,49 @@ async def _generate_with_claude(memory: MemoryManager, formatted_system: str, ch
     # Final safety check: validate that no orphaned tool_use blocks exist in the messages
     clean_history = _purge_orphaned_tool_blocks(clean_history)
     
-    # STEP 1: Initial call passing tools
-    claude_res = await c.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        temperature=0.7,
-        system=formatted_system,
-        tools=conversational_tools_anthropic,
-        messages=clean_history
-    )
+    # RECURSIVE TOOL LOOP: Allows Claude to perform multi-step reasoning (e.g. Search -> Read -> Summarize)
+    messages = list(clean_history)
+    max_turns = 5
+    current_turn = 0
     
-    # STEP 2: Intercept tool use (handle multiple tools if needed)
-    if claude_res.stop_reason == "tool_use":
-        tool_results = []
-        for block in claude_res.content:
-            if getattr(block, "type", None) == "tool_use":
-                result_text = await execute_skill(block.name, block.input, memory=memory)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result_text
-                })
+    while current_turn < max_turns:
+        current_turn += 1
         
-        # Layout Anthropic's strict multi-turn tool format memory block
-        temp_history = list(clean_history)
-        temp_history.append({"role": "assistant", "content": claude_res.content})
-        temp_history.append({"role": "user", "content": tool_results})
-        
-        # STEP 3: Final Synthesis
-        claude_res_two = await c.messages.create(
+        # Call Claude with current conversation state and tools
+        claude_res = await c.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=256,
+            max_tokens=1024,
             temperature=0.7,
             system=formatted_system,
             tools=conversational_tools_anthropic,
-            messages=temp_history
+            messages=messages
         )
-        final_reply = claude_res_two.content[0].text
+        
+        # Append the assistant's thinking/tool-use block to history
+        messages.append({"role": "assistant", "content": claude_res.content})
+        
+        if claude_res.stop_reason == "tool_use":
+            # 1. Execute all requested tools in parallel (if multiple)
+            tool_results = []
+            for block in claude_res.content:
+                if getattr(block, "type", None) == "tool_use":
+                    # Execute the skill logic
+                    result_text = await execute_skill(block.name, block.input, memory=memory)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text
+                    })
+            
+            # 2. Append tool results to history for the next turn
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            # Turn complete! Extract the final text response
+            final_reply = _extract_text_from_content(claude_res.content)
+            break
     else:
-        final_reply = claude_res.content[0].text
+        # Loop limit reached
+        final_reply = _extract_text_from_content(messages[-1]["content"]) if messages else "*(Thinking timed out...)*"
     
     # Fail cleanly even if Claude fails
     if final_reply and final_reply.strip():
@@ -255,9 +261,9 @@ async def _extract_with_claude(memory: MemoryManager, prompt: str):
                     "type": "string",
                     "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages."
                 },
-                "new_summarized_memory": {
+                "new_key_memory": {
                     "type": "string",
-                    "description": "A high-level abstraction or summary of a significant conversation segment. Omit if the exchange is mundane."
+                    "description": "A highly concise, one-sentence snapshot of a significant conversation segment. Omit if the exchange is mundane. Avoid long narratives."
                 }
             }
         }
@@ -266,7 +272,7 @@ async def _extract_with_claude(memory: MemoryManager, prompt: str):
     c = get_anthropic_client()
     response = await c.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=256,
+        max_tokens=1024,
         temperature=0.0,
         tools=anthropic_tools,
         tool_choice={"type": "tool", "name": "update_memory"},
@@ -291,5 +297,5 @@ async def _extract_with_claude(memory: MemoryManager, prompt: str):
             if "preferred_language" in args and args["preferred_language"]:
                 memory.update_preferred_language(args["preferred_language"])
             
-            if "new_summarized_memory" in args and args["new_summarized_memory"]:
-                memory.add_summarized_memory(args["new_summarized_memory"])
+            if "new_key_memory" in args and args["new_key_memory"]:
+                memory.add_key_memory(args["new_key_memory"])

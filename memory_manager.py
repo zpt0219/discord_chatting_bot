@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import asyncio
 from typing import Dict, Any, List
 import settings
 
@@ -20,14 +21,30 @@ class MemoryManager:
     
     def __init__(self):
         # Load raw data from disk into memory cache
-        self._init_files()
+        # Initialize the bot identity files if they are missing or return defaults on corruption
         self._bot_data = self._load_file(BOT_FILE)
         self._owner_data = self._load_file(OWNER_FILE)
+        
+        # We re-run init logic to fill in missing keys if the file was just reset by _load_file
+        self._init_files()
 
     def _load_file(self, filename: str) -> Dict[str, Any]:
-        """Helper to safely load a JSON file from disk."""
-        with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
+        """Helper to safely load a JSON file from disk with corruption recovery."""
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
+            # If the file exists but we can't load it (corrupted or empty), back it up and reset
+            if os.path.exists(filename):
+                backup_name = f"{filename}.corrupted_{int(time.time())}"
+                try:
+                    os.rename(filename, backup_name)
+                    print(f"CRITICAL: {filename} was corrupted/empty! Backed up to {backup_name} and resetting.")
+                except:
+                    print(f"CRITICAL: {filename} is unreadable and cannot be renamed.")
+            
+            # Return an empty dictionary to trigger re-initialization in callers
+            return {}
 
     def _init_files(self):
         """
@@ -52,26 +69,49 @@ class MemoryManager:
                         "interests": [],     # Hobbies, likes, dislikes
                         "preferences": [],   # How the owner likes the bot to behave
                         "routine": [],       # Daily schedule, work life
+                        "key_memories": [],   # NEW: Abstracted conversation snapshots
                         "other": []          # Catch-all
                     },
                     "relationship_stage": "stranger",  # stranger -> acquaintance -> friend
                     "preferred_language": None,  # e.g. "Chinese", "English", etc.
                     "last_interaction_timestamp": 0, # When they last talked
                     "proactive_messages_ignored": 0,  # Counter for backoff logic
-                    "summarized_memories": [], # Long-term abstracted conversation snapshots
                     "reminders": [] # Upcoming alerts: [{"time": timestamp, "message": str, "triggered": bool}]
                 }, f, indent=4)
 
-    def save(self):
+    async def save(self):
         """
         Explicitly commits the in-memory cache to the JSON files on disk.
-        This should be called at the end of a conversation turn to minimize I/O.
+        This uses asyncio.to_thread to prevent blocking the event loop 
+        and ensure the write-to-disk is atomic.
         """
-        with open(BOT_FILE, "w", encoding="utf-8") as f:
-            json.dump(self._bot_data, f, indent=4)
-        with open(OWNER_FILE, "w", encoding="utf-8") as f:
-            json.dump(self._owner_data, f, indent=4)
-        print("MEMORY: Synchronized caches to disk.")
+        # We save both files in parallel in the background thread pool
+        await asyncio.gather(
+            asyncio.to_thread(self._save_atomic, BOT_FILE, self._bot_data),
+            asyncio.to_thread(self._save_atomic, OWNER_FILE, self._owner_data)
+        )
+        print("MEMORY: Synchronized caches to disk atomically.")
+
+    def _save_atomic(self, filename: str, data: Dict[str, Any]):
+        """
+        Internal helper that writes to a temporary file and then performs 
+        an atomic OS-level replace. This protects against corrupted JSON 
+        files if the process crashes mid-write.
+        """
+        temp_filename = f"{filename}.tmp"
+        try:
+            with open(temp_filename, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            
+            # os.replace is atomic on POSIX and Windows (Python 3.3+)
+            os.replace(temp_filename, filename)
+        except Exception as e:
+            print(f"CRITICAL ERROR: Failed to save {filename} atomically: {e}")
+            # If we failed, try to cleanup the temp file so it doesn't clutter
+            if os.path.exists(temp_filename):
+                try: os.remove(temp_filename)
+                except: pass
+            raise e
                 
     # ==========================================
     # BOT IDENTITY METHODS
@@ -137,7 +177,7 @@ class MemoryManager:
         Adds or merges facts into specific categories (Identity, Interests, Preferences, Routine, Other).
         """
         if "facts" not in self._owner_data:
-            self._owner_data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "other": []}
+            self._owner_data["facts"] = {"identity": [], "interests": [], "preferences": [], "routine": [], "key_memories": [], "other": []}
             
         for entry in categorized_facts:
             cat = entry.get("category", "other").lower()
@@ -147,6 +187,12 @@ class MemoryManager:
             if text not in self._owner_data["facts"][cat]:
                 self._owner_data["facts"][cat].append(text)
                 
+        # NEW: Prune to prevent "Disk-Leak" (physical growth of JSON files)
+        for cat in self._owner_data["facts"]:
+            if len(self._owner_data["facts"][cat]) > settings.MAX_STORAGE_FACTS_PER_CATEGORY:
+                # Keep only the N most recent facts
+                self._owner_data["facts"][cat] = self._owner_data["facts"][cat][-settings.MAX_STORAGE_FACTS_PER_CATEGORY:]
+
         # Update relationship stage based on total facts
         total_facts = sum(len(facts) for facts in self._owner_data["facts"].values())
         if total_facts >= 5 and self._owner_data["relationship_stage"] == "stranger":
@@ -154,23 +200,30 @@ class MemoryManager:
         elif total_facts >= 15 and self._owner_data["relationship_stage"] == "acquaintance":
             self._owner_data["relationship_stage"] = "friend"
 
-    def add_summarized_memory(self, memory_text: str):
+    def add_key_memory(self, memory_text: str):
         """
-        Appends a new summary snapshot to the cached memory.
+        Appends a new Key Memory snapshot into the categorized facts section.
         """
         if not memory_text or not isinstance(memory_text, str) or len(memory_text) < 5: return
-        if "summarized_memories" not in self._owner_data:
-            self._owner_data["summarized_memories"] = []
+        
+        if "facts" not in self._owner_data:
+            self._owner_data["facts"] = {}
+        if "key_memories" not in self._owner_data["facts"]:
+            self._owner_data["facts"]["key_memories"] = []
             
-        if memory_text not in self._owner_data["summarized_memories"]:
-            self._owner_data["summarized_memories"].append(memory_text)
-            # Evict old summaries (count limit)
-            if len(self._owner_data["summarized_memories"]) > 20: 
-                self._owner_data["summarized_memories"] = self._owner_data["summarized_memories"][-20:]
-            # Evict old summaries (char total limit)
-            max_chars = settings.MAX_SUMMARIZED_MEMORIES_LEN
-            while self._owner_data["summarized_memories"] and sum(len(m) for m in self._owner_data["summarized_memories"]) > max_chars:
-                self._owner_data["summarized_memories"].pop(0)
+        if memory_text not in self._owner_data["facts"]["key_memories"]:
+            self._owner_data["facts"]["key_memories"].append(memory_text)
+            
+            # Evict old memories if they grow too large to preserve prompt space
+            # Prune by count
+            max_count = 30
+            if len(self._owner_data["facts"]["key_memories"]) > max_count: 
+                self._owner_data["facts"]["key_memories"] = self._owner_data["facts"]["key_memories"][-max_count:]
+                
+            # Prune by character limit
+            max_chars = settings.MAX_KEY_MEMORIES_LEN
+            while self._owner_data["facts"]["key_memories"] and sum(len(m) for m in self._owner_data["facts"]["key_memories"]) > max_chars:
+                self._owner_data["facts"]["key_memories"].pop(0)
 
     def update_preferred_language(self, language: str):
         """Updates cached preferred language."""

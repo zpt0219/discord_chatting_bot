@@ -34,10 +34,10 @@ def get_openai_cloud_client() -> 'AsyncOpenAI':
     return openai_cloud_client
 
 
-async def _generate_with_openai(memory: MemoryManager, formatted_system: str, chat_history: list, image_data: list = None, audio_data: list = None) -> str:
+async def _generate_with_openai(memory: MemoryManager, formatted_system: str, chat_history: list, image_data: list = None) -> str:
     """
-    Tier 3 / Audio Specialist: Generates a response using OpenAI's GPT-4o.
-    - PRIMARY: Handles all native voice/audio input processing.
+    Tier 3 / Fallback Specialist: Generates a response using OpenAI's GPT-4o.
+    - PRIMARY: Handles all advanced fallback tasks if Claude is unavailable.
     - FALLBACK: Acts as the last-resort text provider if Local Llama and Claude both fail.
     - FALLBACK: Acts as the secondary vision provider if Claude fails.
     """
@@ -62,87 +62,65 @@ async def _generate_with_openai(memory: MemoryManager, formatted_system: str, ch
                     })
                 openai_messages[i] = {"role": "user", "content": content_blocks}
                 break
-    
-    # If audio data is provided, inject it into the last user message as input_audio blocks
-    if audio_data and openai_messages:
-        for i in range(len(openai_messages) - 1, -1, -1):
-            if openai_messages[i]["role"] == "user":
-                # Get existing content (might already be a list from image injection, or a string)
-                existing = openai_messages[i]["content"]
-                if isinstance(existing, str):
-                    text = existing
-                    if text == "[sent a voice message]":
-                        text = "The owner sent you a voice message. Listen to it and respond naturally."
-                    content_blocks = [{"type": "text", "text": text}]
-                else:
-                    # Already a list of content blocks (e.g., from image injection)
-                    content_blocks = list(existing)
-                
-                for audio in audio_data:
-                    content_blocks.append({
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": audio["base64"],
-                            "format": audio["format"]
-                        }
-                    })
-                openai_messages[i] = {"role": "user", "content": content_blocks}
-                break
 
-    # STEP 1: Ask the LLM to generate a response (providing the tools)
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        messages=openai_messages,
-        max_tokens=512,
-        temperature=0.7,
-        tools=conversational_tools_openai,
-        timeout=60.0
-    )
+    # RECURSIVE TOOL LOOP: Support multi-step research or planning (max 5 turns)
+    messages = openai_messages
+    current_turn = 0
+    max_turns = 5
 
-    message_obj = response.choices[0].message
-
-    # STEP 2: Did the LLM decide to call tools?
-    if message_obj.tool_calls:
-        # Append the assistant's message with ALL tool calls
-        openai_messages.append({
-            "role": "assistant",
-            "content": message_obj.content,
-            "tool_calls": [tc.model_dump() for tc in message_obj.tool_calls]
-        })
+    while current_turn < max_turns:
+        current_turn += 1
         
-        # Execute each tool independently
-        for tool_call in message_obj.tool_calls:
-            args = {}
-            if tool_call.function.arguments:
-                try:
-                    args = json.loads(tool_call.function.arguments)
-                except:
-                    pass
-
-            result_text = await execute_skill(tool_call.function.name, args, memory=memory)
-
-            # Append the result for this specific tool call
-            openai_messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": tool_call.function.name,
-                "content": result_text
-            })
-
-        # STEP 3: Final synthesis with tool output
-        response_two = await client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="gpt-4o",
-            messages=openai_messages,
-            max_tokens=512,
+            messages=messages,
+            max_tokens=1024,
             temperature=0.7,
+            tools=conversational_tools_openai,
             timeout=60.0
         )
-        message_obj = response_two.choices[0].message
+        
+        message_obj = response.choices[0].message
+        
+        # OpenAI requires tool_calls to be dumped if being sent back in history
+        assistant_msg = {
+            "role": "assistant",
+            "content": message_obj.content
+        }
+        if message_obj.tool_calls:
+            assistant_msg["tool_calls"] = [tc.model_dump() for tc in message_obj.tool_calls]
+        
+        messages.append(assistant_msg)
 
-    reply = message_obj.content
-    if reply and reply.strip():
-        return reply.strip()
-    raise Exception("Empty text returned by OpenAI cloud model")
+        if message_obj.tool_calls:
+            # 1. Execute all requested tools
+            for tool_call in message_obj.tool_calls:
+                args = {}
+                if tool_call.function.arguments:
+                    try: args = json.loads(tool_call.function.arguments)
+                    except: pass
+
+                result_text = await execute_skill(tool_call.function.name, args, memory=memory)
+
+                # 2. Append tool result for the next turn
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "content": result_text
+                })
+        else:
+            # Turn complete!
+            reply = message_obj.content
+            if reply and reply.strip():
+                return reply.strip()
+            break
+    else:
+        # Loop limit reached
+        final_reply = messages[-1].get("content") or "*(Thinking timed out...)*"
+        return final_reply.strip()
+
+    raise Exception("Empty or invalid response from OpenAI cloud model")
 
 
 async def _extract_with_openai(memory: MemoryManager, prompt: str):
@@ -192,9 +170,9 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
                         "type": "string",
                         "description": "The language the owner wants the bot to speak in. Only include if the owner explicitly asks to switch languages."
                     },
-                    "new_summarized_memory": {
+                    "new_key_memory": {
                         "type": "string",
-                        "description": "A high-level abstraction or summary of a significant conversation segment. Omit if the exchange is mundane."
+                        "description": "A highly concise, one-sentence snapshot of a significant conversation segment. Omit if the exchange is mundane. Avoid long narratives."
                     }
                 }
             }
@@ -231,5 +209,5 @@ async def _extract_with_openai(memory: MemoryManager, prompt: str):
                 if "preferred_language" in args and args["preferred_language"]:
                     memory.update_preferred_language(args["preferred_language"])
                 
-                if "new_summarized_memory" in args and args["new_summarized_memory"]:
-                    memory.add_summarized_memory(args["new_summarized_memory"])
+                if "new_key_memory" in args and args["new_key_memory"]:
+                    memory.add_key_memory(args["new_key_memory"])

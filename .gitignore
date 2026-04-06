@@ -26,3 +26,6 @@ env/
 
 # Remove Tunnel folder, this is only for my own deployment
 tunnel/
+
+#lock files
+.bot.lock

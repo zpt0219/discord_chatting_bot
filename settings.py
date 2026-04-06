@@ -28,8 +28,22 @@ CHAT_HISTORY_FETCH_LIMIT = 20
 # Max messages to keep in local chat history (sliding window).
 CHAT_HISTORY_PRUNE_LIMIT = 20
 
-# Max total characters to keep in long-term summarized memories.
-MAX_SUMMARIZED_MEMORIES_LEN = 10000
+# Max total characters to keep in long-term key memories (Pruned for context safety).
+MAX_KEY_MEMORIES_LEN = 5000
+
+# Max facts to inject per category in the system prompt.
+MAX_FACTS_PER_CATEGORY = 10
+
+# Global character ceiling for all facts injected into the prompt.
+MAX_FACTS_TOTAL_CHARS = 3000
+
+# Max facts to keep in permanent disk storage per category (to prevent disk-leak).
+# When this cap is reached, the oldest facts are pruned.
+MAX_STORAGE_FACTS_PER_CATEGORY = 200
+
+# Friendly error messages when ALL model tiers fail.
+ERROR_MSG_GENERIC = "*(I'm having a bit of a brain-freeze right now! 😵‍💫 Give me a second to reset and try again.)*"
+ERROR_MSG_VISION = "*(I tried to look at that image, but my eyes are a bit blurry right now... 👁️‍🗨️)*"
 
 # Separator used when combining multiple queued messages into one query.
 QUEUE_COMBINE_SEPARATOR = "\n[followed by]\n"

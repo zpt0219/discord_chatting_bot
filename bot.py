@@ -27,8 +27,32 @@ from prompts import PROACTIVE_PROMPT
 # to write to the same persistent JSON memory simultaneously.
 LOCK_FILE = ".bot.lock"
 
+def is_pid_running(pid):
+    """Checks if the given PID is currently active on the system."""
+    if pid < 0: return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
 def acquire_lock():
-    """Tries to create a lock file to ensure singleton status."""
+    """Tries to create a lock file to ensure singleton status, with stale detection."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                old_pid = int(f.read().strip())
+            
+            if is_pid_running(old_pid):
+                return False
+            else:
+                print(f"NOTICE: Found stale lock file for dead process {old_pid}. Cleaning up.")
+                os.remove(LOCK_FILE)
+        except Exception:
+            print(f"NOTICE: Uncovering corrupted/invalid lock file. Cleaning up.")
+            try: os.remove(LOCK_FILE)
+            except: pass
+
     try:
         # os.O_EXCL ensures the file is created ONLY if it doesn't exist (atomic)
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -36,6 +60,9 @@ def acquire_lock():
             f.write(str(os.getpid()))
         return True
     except FileExistsError:
+        return False
+    except Exception as e:
+        print(f"CRITICAL: Failed to write lock file: {e}")
         return False
 
 def release_lock():
@@ -136,15 +163,16 @@ class AgentBot(discord.Client):
         
         try:
             # We loop to drain the queue if more messages arrived during the previous LLM processing step.
+            msg_to_process = message
             while True:
                 # 1. Gather all messages to process in this turn
                 pending = self._message_queues[context_id]
                 self._message_queues[context_id] = []
                 
-                current_batch = [message] + pending if 'message' in locals() and message else pending
-                # After the first iteration, 'message' (the initial trigger) is handled, 
+                current_batch = [msg_to_process] + pending if msg_to_process else pending
+                # After the first iteration, 'msg_to_process' (the initial trigger) is handled, 
                 # and we only focus on 'pending'.
-                message = None 
+                msg_to_process = None 
 
                 if not current_batch:
                     break
@@ -155,14 +183,13 @@ class AgentBot(discord.Client):
                 # Aggregate text and attachments from all messages in the batch
                 combined_clean_msgs = []
                 image_data_list = []
-                audio_data_list = []
                 
                 for msg in current_batch:
                     c_text = msg.clean_content.replace(f"@{self.user.name}", "").replace(f"@{self.user.display_name}", "").strip()
                     if c_text:
                         combined_clean_msgs.append(c_text)
                     
-                    # Detect and download image/audio attachments from each message
+                    # Detect and download image attachments from each message
                     for attachment in msg.attachments:
                         if attachment.content_type and attachment.content_type.startswith("image/"):
                             try:
@@ -178,12 +205,6 @@ class AgentBot(discord.Client):
                                 
                                 image_data_list.append({"base64": b64_str, "media_type": real_media_type})
                             except Exception as e: print(f"Warning: Image download failed: {e}")
-                        elif attachment.content_type and attachment.content_type.startswith("audio/"):
-                            try:
-                                audio_bytes = await attachment.read()
-                                b64_str = base64.b64encode(audio_bytes).decode("utf-8")
-                                audio_data_list.append({"base64": b64_str, "format": "mp3"})
-                            except Exception as e: print(f"Warning: Audio download failed: {e}")
 
                 # Combine clean text using the separator from settings
                 final_clean_msg = settings.QUEUE_COMBINE_SEPARATOR.join(combined_clean_msgs)
@@ -204,8 +225,6 @@ class AgentBot(discord.Client):
                     # 3. Append combined query to history
                     if final_clean_msg:
                         label = final_clean_msg
-                    elif audio_data_list:
-                        label = f"[sent {len(audio_data_list)} voice message(s)]"
                     else:
                         label = f"[sent {len(image_data_list)} image(s)]"
                     self.chat_history.append({"role": "user", "content": label})
@@ -214,30 +233,36 @@ class AgentBot(discord.Client):
                     if len(self.chat_history) > settings.CHAT_HISTORY_PRUNE_LIMIT:
                         self.chat_history = self.chat_history[-settings.CHAT_HISTORY_PRUNE_LIMIT:]
                             
-                    # 5. Call LLM
-                    async with target_message.channel.typing():
-                        res = await generate_response(
-                            self.memory, self.chat_history,
-                            image_data=image_data_list if image_data_list else None,
-                            audio_data=audio_data_list if audio_data_list else None
-                        )
-                        reply_text = res["text"]
-                        attachment_path = res["attachment"]
-                        
-                        # 6. Send reply (to target_message)
-                        safe_reply = reply_text[:settings.MAX_DISCORD_MSG_LEN]
-                        if attachment_path and os.path.exists(attachment_path):
-                            file = discord.File(attachment_path)
-                            await target_message.channel.send(safe_reply, file=file)
-                        else:
-                            await target_message.channel.send(safe_reply)
+                    # 5. Call LLM (with Final Safety Net)
+                    try:
+                        async with target_message.channel.typing():
+                            res = await generate_response(
+                                self.memory, self.chat_history,
+                                image_data=image_data_list if image_data_list else None
+                            )
+                            reply_text = res["text"]
+                            attachment_path = res["attachment"]
+                            
+                            # 6. Send reply (to target_message)
+                            safe_reply = reply_text[:settings.MAX_DISCORD_MSG_LEN]
+                            if attachment_path and os.path.exists(attachment_path):
+                                file = discord.File(attachment_path)
+                                await target_message.channel.send(safe_reply, file=file)
+                            else:
+                                await target_message.channel.send(safe_reply)
+                    except Exception as e:
+                        # Final catch-all for any unhandled generation/network errors
+                        print(f"CRITICAL: Uncaught generation or network error: {e}")
+                        reply_text = settings.ERROR_MSG_GENERIC
+                        await target_message.channel.send(reply_text)
                     
-                    # 7. Update context & memory
+                    # 7. Update context & memory (only if generate_response didn't completely crash)
+                    # If it did crash, we still want to keep history but maybe warn the AI later.
                     self.chat_history.append({"role": "assistant", "content": reply_text})
                     await extract_and_update_memory(self.memory, final_clean_msg, reply_text)
 
             # NEW: Save the in-memory cache to disk after a full turn (or batch of turns) finishes.
-            self.memory.save()
+            await self.memory.save()
         finally:
             self._active_contexts.remove(context_id)
 
@@ -286,7 +311,7 @@ class AgentBot(discord.Client):
         # We multiply the target_delay by 2^ignored_count.
         # Example: if 2 mins target, and they ignore it once, it becomes 4 mins. Ignore again, 8 mins.
         # This prevents the bot from becoming a needy spammer.
-        multiplier = (2 ** ignored_count) if ignored_count > 0 else 1
+        multiplier = (2 ** min(10,gnored_count)) if ignored_count > 0 else 1
         target_delay *= multiplier
         
         # If enough time has passed...
@@ -319,7 +344,7 @@ class AgentBot(discord.Client):
                     
                     # Log that we sent a proactive message (increases the ignored_count counter by 1)
                     self.memory.record_proactive_message_sent()
-                    self.memory.save()
+                    await self.memory.save()
                     
                     # Add to history
                     self.chat_history.append({"role": "assistant", "content": reply_text})
@@ -359,7 +384,7 @@ class AgentBot(discord.Client):
                     print(f"Error sending individual reminder: {e}")
             
             # 3. Save the cache to disk (atomic write)
-            self.memory.save()
+            await self.memory.save()
             
             # 4. Periodically clean old reminders
             self.memory.clean_old_reminders()

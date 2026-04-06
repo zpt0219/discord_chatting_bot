@@ -1,12 +1,13 @@
 import os
 import json
 import datetime
+import asyncio
 from memory_manager import MemoryManager
 
 from models.router import get_model_response, get_memory_extraction
 
 import settings
-from prompts import SYSTEM_PROMPT
+from prompts import SYSTEM_PROMPT, MEMORY_EXTRACTION_PROMPT
 
 # ===============================================
 # MAIN CHAT GENERATION (WITH ROUTER)
@@ -27,7 +28,7 @@ def is_complex_query(user_message: str) -> bool:
         return True
     return False
 
-async def generate_response(memory: MemoryManager, chat_history: list, image_data: list = None, audio_data: list = None) -> dict:
+async def generate_response(memory: MemoryManager, chat_history: list, image_data: list = None) -> dict:
     """
     The Strategic Router & Context Hydrator.
     
@@ -42,43 +43,73 @@ async def generate_response(memory: MemoryManager, chat_history: list, image_dat
     owner_info = memory.get_owner_relationship()
     
     # 2. Format localized relationship facts for the prompt injection
+    # 3. Handle Fact Injection with Context Window Protection
+    # Large knowledge stores can overwhelm small local models.
+    # We limit per-category and total character count.
     facts_dict = owner_info.get("facts", {})
-    facts_list = []
     category_labels = {
         "identity": "👤 Identity",
-        "interests": "🌟 Interests & Hobbies",
-        "preferences": "⚙️ Bot Preferences",
-        "routine": "📅 Daily Routine & Work",
-        "other": "📝 Other Facts"
+        "interests": "🌟 Interests",
+        "preferences": "⚙️ Preferences",
+        "routine": "📅 Routine",
+        "key_memories": "🧠 Key Memories",
+        "other": "📂 Other facts"
     }
+    
+    facts_list = []
+    total_chars = 0
     
     for cat, label in category_labels.items():
         cat_facts = facts_dict.get(cat, [])
         if cat_facts:
-            facts_list.append(f"{label}:")
-            facts_list.extend([f"  - {f}" for f in cat_facts])
+            # Take ONLY the most recent facts (last N)
+            recent_facts = cat_facts[-settings.MAX_FACTS_PER_CATEGORY:]
+            
+            # Format this category's block
+            block_lines = [f"{label}:"]
+            block_lines.extend([f"  - {f}" for f in recent_facts])
+            block_text = "\n".join(block_lines)
+            
+            # Global Character Ceiling Check
+            if total_chars + len(block_text) > settings.MAX_FACTS_TOTAL_CHARS:
+                print(f"DEBUG: Fact injection reached ceiling. Skipping '{cat}' category.")
+                break
+                
+            facts_list.append(block_text)
+            total_chars += len(block_text) + 1
+            
+    facts_str = "\n".join(facts_list) if facts_list else "(No specific personal facts saved yet.)"
     
-    facts_str = "\n".join(facts_list) if facts_list else "I don't know anything about my owner yet."
-    memories_str = "\n".join([f"- {m}" for m in owner_info.get("summarized_memories", [])])
+    # 3. Format recent raw history for the system prompt (last 5 turns)
+    raw_history_list = []
+    for msg in chat_history[-5:]:
+        role_label = "Owner" if msg["role"] == "user" else "Bot"
+        raw_history_list.append(f"{role_label}: {msg['content']}")
+    raw_history_str = "\n".join(raw_history_list) if raw_history_list else "(No recent exchanges yet.)"
     
     # 3. Handle language preference
     pref_lang = owner_info.get("preferred_language")
     lang_instr = f"IMPORTANT: Your owner prefers to speak in {pref_lang}. Please respond ONLY in {pref_lang}." if pref_lang else ""
     
-    # 4. Fill the system prompt template with the latest reality
+    # 4. Handle real-time awareness (Today's date and time)
+    now = datetime.datetime.now()
+    current_time_str = now.strftime("%A, %B %d, %Y, %I:%M %p")
+    
+    # 5. Fill the system prompt template with the latest reality
     formatted_system = SYSTEM_PROMPT.format(
         bot_name=bot_info.get("name") or "[Unknown/Not chosen yet]",
         bot_traits=", ".join(bot_info.get("personality_traits", [])) or "None identified yet.",
+        current_time=current_time_str,
         relationship_stage=owner_info.get("relationship_stage", "stranger"),
+        raw_history=raw_history_str,
         owner_facts=facts_str or "I don't know anything about my owner yet.",
-        summarized_memories=memories_str or "I don't have any long-term memories of our past conversations yet.",
         language_instruction=lang_instr
     )
     
     # 3. ROUTE TO MODELS (Tiered Router)
     res = await get_model_response(
         memory, formatted_system, chat_history,
-        image_data=image_data, audio_data=audio_data
+        image_data=image_data
     )
     
     # 4. POST-PROCESS ATTACHMENTS (GENERIC RELAY)
@@ -120,34 +151,23 @@ async def extract_and_update_memory(memory: MemoryManager, user_message: str, bo
     
     existing_facts = "\n".join(facts_context)
     existing_traits = ", ".join(bot_info.get("personality_traits", []))
-    existing_memories = "\n".join([f"- {m}" for m in owner_info.get("summarized_memories", [])])
+    existing_memories = "\n".join([f"- {m}" for m in owner_facts.get("key_memories", [])])
     
-    prompt = (
-        f"Analyze this recent exchange between the owner and the bot.\n"
-        f"Owner: {user_message}\n"
-        f"Bot: {bot_response}\n\n"
-        f"Everything ALREADY known about the owner (by category):\n"
-        f"{existing_facts if existing_facts else 'None yet.'}\n\n"
-        f"Traits ALREADY known about the bot:\n"
-        f"{existing_traits if existing_traits else 'None yet.'}\n\n"
-        f"Long-term memories ALREADY archived:\n"
-        f"{existing_memories if existing_memories else 'None yet.'}\n\n"
-        f"Task:\n"
-        f"1. Extract any NEW specific facts about the owner and CATEGORIZE them:\n"
-        f"   - 'identity': Name, age, job, role, social status.\n"
-        f"   - 'interests': Hobbies, likes, dislikes, favorite media.\n"
-        f"   - 'preferences': How the owner wants the bot to act or speak.\n"
-        f"   - 'routine': Daily schedule, habits, current activities.\n"
-        f"   - 'other': Anything else.\n"
-        f"2. Identify any NEW personality traits the bot exhibited.\n"
-        f"3. Generate a one-sentence high-level 'memory abstraction' for the 'new_summarized_memory' field if this interaction introduced or significantly developed a topic.\n"
-        f"CRITICAL: \n"
-        f"1. Do NOT extract facts that are already listed above. If a new fact is just a better/updated version of an existing one, extract it and we will handle the update.\n"
-        f"2. Keep personality traits SIMPLE (one or two words).\n"
+    prompt = MEMORY_EXTRACTION_PROMPT.format(
+        user_message=user_message,
+        bot_response=bot_response,
+        existing_facts=existing_facts if existing_facts else "None yet.",
+        existing_traits=existing_traits if existing_traits else "None yet.",
+        existing_memories=existing_memories if existing_memories else "None yet."
     )
 
     try:
-        await get_memory_extraction(memory, prompt)
+        # Wrap background extraction in a strict timeout to prevent hangs
+        await asyncio.wait_for(get_memory_extraction(memory, prompt), timeout=30.0)
+    except asyncio.TimeoutError:
+        print("WARNING: Background memory extraction timed out (30s). Skipping.")
+    except Exception as e:
+        print(f"ERROR: Background memory extraction failed: {e}")
     finally:
         # Sequential Writeback: Update timestamp only after abstraction logic is complete.
         # This prevents race conditions by ensuring only one write happens per conversation turn.

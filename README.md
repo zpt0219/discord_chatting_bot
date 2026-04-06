@@ -86,5 +86,4 @@ python bot.py
 
 ## 🛡️ Safety & Stability
 - **Locked Execution**: Uses a `.bot.lock` file to prevent multiple instances from running simultaneously.
-- **Constraint Management**: Hard character limits on summarized memories (10k) and Discord messages (2k) to ensure reliability.
 - **Graceful Fallbacks**: If one LLM provider is down, the bot automatically tries the next one in the priority chain.
