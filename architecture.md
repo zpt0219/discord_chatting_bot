@@ -1,6 +1,49 @@
 # 🏗️ System Architecture Overview
 
-This diagram visualizes how the bot processes messages, routes between AI models, and manages persistent, categorized memory.
+This section visualizes how a message travels through the system and how the overall components are structured.
+
+## 🌊 Happy Path: The "Sense-Think-Act" Sequence
+
+This sequence diagram illustrates exactly how a single user message travels through the system from the moment it is received until the final memory extraction is persisted to disk.
+
+```mermaid
+sequenceDiagram
+    participant U as 👤 User
+    participant B as 🤖 bot.py
+    participant A as 🧠 agent.py
+    participant R as 🚦 router.py
+    participant S as 🛠️ skills/
+    participant M as 📂 memory_manager.py
+
+    U->>B: Sends Message
+    B->>B: Batch/Queue Items
+    B->>B: Acquire Integrity Lock
+    B->>A: generate_response()
+    A->>M: get_owner_relationship()
+    M-->>A: (Identity, Interests, Routine)
+    A->>R: get_model_response()
+    
+    rect rgb(240, 240, 240)
+        Note right of R: Model Interaction Loop
+        R->>S: execute_skill()
+        S-->>R: (Tool Data)
+    end
+
+    R-->>A: Final Text Response
+    A-->>B: {text, attachment}
+    B->>U: Sends Discord Reply
+    
+    B->>A: extract_and_update_memory()
+    A->>M: add_categorized_facts()
+    A->>M: add_key_memory()
+    B->>M: save()
+    M->>M: Atomic Disk Write
+    B->>B: Release Integrity Lock
+```
+
+---
+
+## 🏛️ High-Level Component Structure
 
 ```mermaid
 graph TD
@@ -60,47 +103,6 @@ graph TD
     Skills --> Agent
     Agent --> Bot
     Bot --> User
-```
-
----
-
-## 🌊 Happy Path: The "Sense-Think-Act" Sequence
-
-This sequence diagram illustrates exactly how a single user message travels through the system from the moment it is received until the final memory extraction is persisted to disk.
-
-```mermaid
-sequenceDiagram
-    participant U as 👤 User
-    participant B as 🤖 bot.py
-    participant A as 🧠 agent.py
-    participant R as 🚦 router.py
-    participant S as 🛠️ skills/
-    participant M as 📂 memory_manager.py
-
-    U->>B: Sends Message
-    B->>B: Batch/Queue Items
-    B->>B: Acquire Integrity Lock
-    B->>A: generate_response()
-    A->>M: get_owner_relationship()
-    M-->>A: (Identity, Interests, Routine)
-    A->>R: get_model_response()
-    
-    rect rgb(240, 240, 240)
-        Note right of R: Model Interaction Loop
-        R->>S: execute_skill()
-        S-->>R: (Tool Data)
-    end
-
-    R-->>A: Final Text Response
-    A-->>B: {text, attachment}
-    B->>U: Sends Discord Reply
-    
-    B->>A: extract_and_update_memory()
-    A->>M: add_categorized_facts()
-    A->>M: add_key_memory()
-    B->>M: save()
-    M->>M: Atomic Disk Write
-    B->>B: Release Integrity Lock
 ```
 
 ### 🗝️ Key Components
