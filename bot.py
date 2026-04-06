@@ -128,11 +128,10 @@ class AgentBot(discord.Client):
             
         # We enforce the "owner-only" rule.
         owner = settings.OWNER_USERNAME
-        if message.author.name != owner and message.author.global_name != owner:
+        if owner and (message.author.name != owner and message.author.global_name != owner):
             print(f"Ignored message from {message.author.name} (not '{owner}')")
             # If the user is not the owner, we simply drop the message and do nothing.
-            # TODO: For testing purpose, allow anyone to interact
-            # return
+            return
             
         # We save the discord user ID of whoever messages it. 
         # This allows the bot to know WHO to DM when it proactively reaches out later.

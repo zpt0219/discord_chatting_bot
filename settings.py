@@ -1,9 +1,14 @@
 import os
+from dotenv import load_dotenv
+
+# Ensure environment variables are loaded if this module is imported standalone
+load_dotenv()
 
 # =======================================================
 # BOT IDENTITY & OWNER
 # =======================================================
-OWNER_USERNAME = "cm6550"
+# Discord username of the primary owner. The bot only responds to this user.
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
 
 # =======================================================
 # ROUTER CONFIGURATIONS (agent.py)
