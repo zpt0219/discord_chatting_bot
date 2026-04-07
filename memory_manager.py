@@ -176,10 +176,9 @@ class MemoryManager:
         """Updates specific fields in the cached relationship file."""
         self._owner_data.update(updates)
             
-    def set_owner_id_if_null(self, owner_id: int):
-        """Saves the user's Discord ID if not set."""
-        if self._owner_data["owner_id"] is None:
-            self._owner_data["owner_id"] = owner_id
+    def set_owner_id(self, owner_id: int):
+        """Saves the user's Discord ID."""
+        self._owner_data["owner_id"] = owner_id
 
     def add_categorized_facts(self, categorized_facts: List[Dict[str, str]]):
         """

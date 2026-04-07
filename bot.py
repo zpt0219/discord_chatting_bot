@@ -135,7 +135,7 @@ class AgentBot(discord.Client):
             
         # We save the discord user ID of whoever messages it. 
         # This allows the bot to know WHO to DM when it proactively reaches out later.
-        self.memory.set_owner_id_if_null(message.author.id)
+        self.memory.set_owner_id(message.author.id)
         
         # We only want the bot to reply to Direct Messages (DMs) or if explicitly @mentioned in a server.
         is_dm = isinstance(message.channel, discord.DMChannel)
