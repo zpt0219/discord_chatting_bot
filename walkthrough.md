@@ -62,6 +62,5 @@ Given more time, the following high-impact features would be implemented:
 
 1.  **Vector Database Integration (RAG)**: While the JSON store is great for structured facts, a Vector DB (like Chroma or Pinecone) would allow the bot to search through *thousands* of raw past messages for specific details that fall outside the "Key Memories" abstraction.
 2.  **Multi-User Relationships**: Currently, the bot is owner-focused. Refactoring the `MemoryManager` to handle a `{user_id: data}` mapping would allow the bot to maintain unique, separate relationships with everyone in a Discord server.
-3.  **Deeper Web Reasoning**: Implementing a multi-turn "Research Loop" where the bot can perform a search, read a page, realize it needs more info, and perform *another* targeted search before replying.
-4.  **Voice Interaction (STT/TTS)**: Fully implementing native Discord voice channel support so the owner can talk to the bot in real-time, using Whisper for transcription and ElevenLabs or OpenAI for high-fidelity speech.
-5.  **Calendaring & Automation**: Adding a "Calendar Skill" that allows the bot to not just set reminders, but actually manage the owner's schedule through Google/Outlook API integrations.
+3.  **Voice Interaction (STT/TTS)**: Fully implementing native Discord voice channel support so the owner can talk to the bot in real-time, using Whisper for transcription and ElevenLabs or OpenAI for high-fidelity speech.
+4.  **Play Discord Game Together**: Implement a skill that allows the bot to play simple games with the owner.
